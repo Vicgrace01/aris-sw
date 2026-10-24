@@ -1,4 +1,10 @@
-/* ---------- Language state ---------- */
+const chat = document.getElementById('chat');
+const textInput = document.getElementById('textInput');
+const sendBtn = document.getElementById('sendBtn');
+const micBtn = document.getElementById('micBtn');
+const triageBar = document.getElementById('triageBar');
+const voiceNotePanel = document.getElementById('voiceNotePanel');
+const inputBar = document.getElementById('inputBar');
 
 const LANG_KEY = 'aris-lang';
 let currentLang = localStorage.getItem(LANG_KEY) || 'sw';
@@ -13,14 +19,14 @@ const LABELS = {
     noAdvice: 'Hakuna ushauri uliopatikana.',
     loadingAnalyze: 'Inachambua tatizo…',
     loadingListen: 'Inabadilisha sauti kuwa maandishi…',
-    listening: 'Inarekodi…',
     greeting: 'Habari! Mimi ni ARIS-SW, mshauri wako wa kilimo. Uliza swali lolote kuhusu kilimo chakula, au bonyeza kitufe cha maikrofoni na zungumza kwa Kiswahili.',
     placeholder: 'Andika swali lako hapa...',
     error: 'Hitilafu',
     recordedAudio: '[Sauti iliyorekodiwa]',
     listenPlay: 'Sikiliza kwa Kiswahili',
-    stopRecording: '■',
-    startRecording: '🎤'
+    convertingAudio: 'Inabadilisha sauti...',
+    audioFailed: 'Sauti haikuweza kubadilishwa',
+    noSpeech: 'Hakuna sauti iliyotambuliwa'
   },
   en: {
     diagnosis: 'Diagnosis',
@@ -31,14 +37,14 @@ const LABELS = {
     noAdvice: 'No advice returned.',
     loadingAnalyze: 'Analyzing problem…',
     loadingListen: 'Transcribing audio…',
-    listening: 'Recording…',
     greeting: 'Hello! I am ARIS-SW, your agricultural advisor. Ask about food crops, or click the microphone and speak in Swahili.',
     placeholder: 'Type your question here...',
     error: 'Error',
     recordedAudio: '[Recorded audio]',
     listenPlay: 'Listen in Swahili',
-    stopRecording: '■',
-    startRecording: '🎤'
+    convertingAudio: 'Converting audio...',
+    audioFailed: 'Could not convert audio',
+    noSpeech: 'No speech detected'
   }
 };
 
@@ -49,17 +55,17 @@ function setLanguage(lang) {
   currentLang = lang;
   localStorage.setItem(LANG_KEY, lang);
   document.documentElement.lang = lang;
-
   document.querySelectorAll('.lang-toggle button').forEach(b => {
     b.classList.toggle('active', b.dataset.lang === lang);
   });
-  document.getElementById('headerSub').textContent = lang === 'sw'
+  const hs = document.getElementById('headerSub');
+  if (hs) hs.textContent = lang === 'sw'
     ? 'Mshauri wa Kilimo · Swahili Agricultural Advisor'
     : 'Agricultural Advisor · Swahili Voice Assistant';
-  document.getElementById('greeting').textContent = t('greeting');
-  document.getElementById('textInput').placeholder = t('placeholder');
-
-  rerenderTriageBar();
+  const g = document.getElementById('greeting');
+  if (g) g.textContent = t('greeting');
+  if (textInput) textInput.placeholder = t('placeholder');
+  renderTriageBar();
   replayTTS();
 }
 
@@ -67,21 +73,10 @@ document.querySelectorAll('.lang-toggle button').forEach(btn => {
   btn.addEventListener('click', () => setLanguage(btn.dataset.lang));
 });
 
-/* ---------- DOM refs ---------- */
-
-const chat = document.getElementById('chat');
-const textInput = document.getElementById('textInput');
-const sendBtn = document.getElementById('sendBtn');
-const micBtn = document.getElementById('micBtn');
-const triageBar = document.getElementById('triageBar');
-
 let currentSessionId = null;
 let pendingQuestions = [];
-let lastAdvisory = null;
 let lastAdvisoryMessageId = null;
 let lastAudioUrl = null;
-
-/* ---------- Input ---------- */
 
 textInput.addEventListener('input', () => { sendBtn.disabled = !textInput.value.trim(); });
 textInput.addEventListener('keydown', (e) => {
@@ -97,49 +92,283 @@ async function submitText() {
   await sendToServer(text);
 }
 
-/* ---------- Voice ---------- */
+/* ============================================================
+   VOICE NOTE RECORDING
+   Flow: click mic → volume bars + timer → click stop →
+         preview player + discard + send → send uploads to STT
+   ============================================================ */
 
-let mediaRecorder;
-let chunks = [];
+let mediaRecorder = null;
+let recordedChunks = [];
+let audioContext = null;
+let analyser = null;
+let volumeAnimationId = null;
+let timerIntervalId = null;
+let recordingStartTime = 0;
+let previewBlob = null;
+let previewUrl = null;
 
-micBtn.addEventListener('click', async () => {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-    return;
-  }
+micBtn.addEventListener('click', startVoiceRecording);
+
+async function startVoiceRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    chunks = [];
+    recordedChunks = [];
     mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = e => e.data.size && chunks.push(e.data);
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
-      micBtn.classList.remove('recording');
-      micBtn.textContent = t('startRecording');
-      addUserBubble(t('recordedAudio'));
-      const loadingId = addLoadingBubble(t('loadingListen'));
-      try {
-        const form = new FormData();
-        form.append('audio', new Blob(chunks, { type: mediaRecorder.mimeType }), 'input.wav');
-        const res = await fetch('/api/stt', { method: 'POST', body: form });
-        const data = await res.json();
-        removeBubble(loadingId);
-        if (!res.ok || !data.text) throw new Error(data.message || 'No speech detected');
-        await sendToServer(data.text);
-      } catch (e) {
-        removeBubble(loadingId);
-        addErrorBubble(e.message);
-      }
+
+    mediaRecorder.ondataavailable = e => { if (e.data.size) recordedChunks.push(e.data); };
+
+    audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(stream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(tr => tr.stop());
+      cancelAnimationFrame(volumeAnimationId);
+      clearInterval(timerIntervalId);
+      if (audioContext && audioContext.state !== 'closed') audioContext.close();
+      finalizeRecording();
     };
+
     mediaRecorder.start();
-    micBtn.classList.add('recording');
-    micBtn.textContent = t('stopRecording');
+    showRecordingUI();
+    startVolumeMeter();
+    startRecordingTimer();
   } catch (e) {
     addErrorBubble('Microphone: ' + e.message);
   }
-});
+}
 
-/* ---------- Chat send ---------- */
+function showRecordingUI() {
+  inputBar.hidden = true;
+  voiceNotePanel.hidden = false;
+  voiceNotePanel.innerHTML = `
+    <div class="volume-bars" id="volumeBars"></div>
+    <span class="recording-timer" id="recordingTimer">0:00</span>
+    <button class="rec-action-btn stop-rec-btn" id="stopRecBtn" title="Stop">■</button>
+  `;
+  const bars = document.getElementById('volumeBars');
+  for (let i = 0; i < 30; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'volume-bar';
+    bars.appendChild(bar);
+  }
+  document.getElementById('stopRecBtn').addEventListener('click', () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+  });
+}
+
+function startVolumeMeter() {
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+  const bars = document.querySelectorAll('.volume-bar');
+
+  function draw() {
+    if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+    const avg = sum / dataArray.length;
+    const level = Math.min(1, avg / 100);
+
+    bars.forEach((bar, i) => {
+      const wobble = 0.6 + Math.random() * 0.4;
+      const h = Math.max(3, level * 32 * wobble);
+      bar.style.height = h + 'px';
+      bar.style.opacity = level < 0.02 ? '0.25' : '1';
+    });
+
+    volumeAnimationId = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+function startRecordingTimer() {
+  recordingStartTime = Date.now();
+  timerIntervalId = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+    const m = Math.floor(elapsed / 60);
+    const s = elapsed % 60;
+    const el = document.getElementById('recordingTimer');
+    if (el) el.textContent = `${m}:${String(s).padStart(2, '0')}`;
+  }, 200);
+}
+
+async function finalizeRecording() {
+  if (recordedChunks.length === 0) {
+    resetToInputBar();
+    return;
+  }
+  showPreviewUI(null); // show "converting" state
+
+  const webmBlob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+  let wavBlob = null;
+  try {
+    wavBlob = await convertToWav(webmBlob);
+  } catch (e) {
+    console.error('WAV conversion failed:', e);
+  }
+
+  if (!wavBlob) {
+    addErrorBubble(t('audioFailed'));
+    resetToInputBar();
+    return;
+  }
+
+  previewBlob = wavBlob;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(previewBlob);
+  showPreviewUI(previewUrl);
+}
+
+function showPreviewUI(url) {
+  voiceNotePanel.innerHTML = `
+    <button class="rec-action-btn play-preview-btn" id="playPreviewBtn" disabled>▶</button>
+    <span class="preview-timer" id="previewTimer">${url ? '0:00' : '…'}</span>
+    <audio id="previewAudio" ${url ? `src="${url}"` : ''}></audio>
+    <div style="flex:1"></div>
+    <button class="rec-action-btn discard-btn" id="discardBtn" title="Discard">✕</button>
+    <button class="rec-action-btn send-voice-btn" id="sendVoiceBtn" title="Send" ${url ? '' : 'disabled'}>➤</button>
+  `;
+
+  const audio = document.getElementById('previewAudio');
+  const playBtn = document.getElementById('playPreviewBtn');
+  const timerEl = document.getElementById('previewTimer');
+  const discardBtn = document.getElementById('discardBtn');
+  const sendVoiceBtn = document.getElementById('sendVoiceBtn');
+
+  if (url) {
+    audio.addEventListener('loadedmetadata', () => {
+      const d = audio.duration || 0;
+      const m = Math.floor(d / 60);
+      const s = Math.floor(d % 60);
+      timerEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+      playBtn.disabled = false;
+    });
+
+    playBtn.addEventListener('click', () => {
+      if (audio.paused) {
+        audio.play();
+        playBtn.textContent = '⏸';
+        playBtn.classList.add('playing');
+      } else {
+        audio.pause();
+        playBtn.textContent = '▶';
+        playBtn.classList.remove('playing');
+      }
+    });
+
+    audio.addEventListener('ended', () => {
+      playBtn.textContent = '▶';
+      playBtn.classList.remove('playing');
+    });
+  }
+
+  discardBtn.addEventListener('click', () => {
+    if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+    previewBlob = null;
+    resetToInputBar();
+  });
+
+  sendVoiceBtn.addEventListener('click', () => {
+    if (previewBlob) sendVoiceNote();
+  });
+}
+
+async function sendVoiceNote() {
+  const loadingId = addLoadingBubble(t('loadingListen'));
+  try {
+    const form = new FormData();
+    form.append('audio', previewBlob, 'input.wav');
+    const res = await fetch('/api/stt', { method: 'POST', body: form });
+    const data = await res.json();
+    removeBubble(loadingId);
+
+    if (!res.ok) {
+      throw new Error(data.message || data.error || t('noSpeech'));
+    }
+    if (!data.text || !data.text.trim()) {
+      throw new Error(t('noSpeech'));
+    }
+
+    if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+    previewBlob = null;
+    resetToInputBar();
+    await sendToServer(data.text);
+  } catch (e) {
+    removeBubble(loadingId);
+    addErrorBubble(e.message);
+    // keep preview so user can discard and retry
+  }
+}
+
+function resetToInputBar() {
+  voiceNotePanel.hidden = true;
+  voiceNotePanel.innerHTML = '';
+  inputBar.hidden = false;
+}
+
+/* ============================================================
+   WAV encoding — matches Speech Studio behaviour:
+   native sample rate, mono, no amplification
+   ============================================================ */
+
+async function convertToWav(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const ctx = new AudioContext();
+  const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+  const wavBuffer = encodeWav(audioBuffer);
+  await ctx.close();
+  return new Blob([wavBuffer], { type: 'audio/wav' });
+}
+
+function encodeWav(audioBuffer) {
+  const sampleRate = audioBuffer.sampleRate;  // native, no downsample
+  const numChannels = 1;                       // mono
+  const bitDepth = 16;
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataLength = audioBuffer.length * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  const ch0 = audioBuffer.getChannelData(0);
+  const ch1 = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : null;
+
+  let offset = 44;
+  for (let i = 0; i < audioBuffer.length; i++) {
+    let sample = ch1 ? (ch0[i] + ch1[i]) / 2 : ch0[i];
+    sample = Math.max(-1, Math.min(1, sample || 0));
+    sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+    view.setInt16(offset, sample, true);
+    offset += 2;
+  }
+
+  return buffer;
+}
+
+/* ============================================================
+   Chat flow
+   ============================================================ */
 
 async function sendToServer(text) {
   addUserBubble(text);
@@ -157,11 +386,9 @@ async function sendToServer(text) {
     });
     const data = await res.json();
     removeBubble(loadingId);
-
     if (!res.ok) throw new Error(data.message || data.error || 'Unknown error');
 
     if (data.sessionId) currentSessionId = data.sessionId;
-    lastAdvisory = data.advisory;
     lastAdvisoryMessageId = data.advisoryMessageId;
     renderAdvisory(data.advisory, data.advisoryMessageId);
 
@@ -177,8 +404,6 @@ async function sendToServer(text) {
   }
 }
 
-/* ---------- Language-aware helpers ---------- */
-
 function pick(swField, enField, fallbackMarker = true) {
   if (currentLang === 'sw') {
     if (swField) return { text: swField, marked: false };
@@ -193,8 +418,6 @@ function markFallback({ text, marked }) {
   return marked ? `${esc(text)}<span class="lang-fallback">EN</span>` : esc(text);
 }
 
-/* ---------- Rendering ---------- */
-
 function renderAdvisory(a, messageId) {
   const id = messageId || 'msg-' + Date.now();
   const existing = document.getElementById(id);
@@ -205,7 +428,6 @@ function renderAdvisory(a, messageId) {
   div.id = id;
 
   const sections = [];
-
   if (a.record_kind === 'refusal') {
     const reason = pick(a.refusal?.reason_sw, a.refusal?.reason_en);
     if (reason.text) sections.push(section(t('refusal'), markFallback(reason)));
@@ -265,15 +487,11 @@ function renderTriageBar() {
   }
 }
 
-function rerenderTriageBar() { renderTriageBar(); }
-
 function clearTriageBar() {
   pendingQuestions = [];
   triageBar.innerHTML = '';
   triageBar.classList.remove('active');
 }
-
-/* ---------- Bubbles ---------- */
 
 function addUserBubble(text) {
   const div = document.createElement('div');
@@ -307,8 +525,6 @@ function removeBubble(id) {
   if (el) el.remove();
 }
 
-/* ---------- TTS ---------- */
-
 async function requestTTS(advisory, messageId) {
   const parts = [
     advisory.diagnosis?.primary?.label_sw || advisory.diagnosis?.primary?.label,
@@ -316,10 +532,8 @@ async function requestTTS(advisory, messageId) {
     ...(advisory.advice?.do_not || []).map(x => x.text_sw || x.text_en),
     advisory.escalation?.trigger_sw || advisory.escalation?.trigger_en,
   ].filter(Boolean);
-
   if (!parts.length) return;
   const text = parts.join('. ');
-
   try {
     const res = await fetch('/api/tts', {
       method: 'POST',
@@ -330,7 +544,7 @@ async function requestTTS(advisory, messageId) {
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     attachPlayButton(messageId, url);
-  } catch { /* optional */ }
+  } catch {}
 }
 
 function attachPlayButton(messageId, url) {
@@ -355,12 +569,8 @@ function replayTTS() {
   }
 }
 
-/* ---------- Utility ---------- */
-
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-
-/* ---------- Initial paint ---------- */
 
 setLanguage(currentLang);
