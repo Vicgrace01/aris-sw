@@ -75,6 +75,14 @@ App runs at http://localhost:3000. Health: curl http://localhost:3000/api/health
 ## Testing
 
     npm test
+   
+## Live demo
+
+**https://aris-sw.onrender.com**
+
+Hosted on Render's free tier, which sleeps after 15 minutes of inactivity. The first request after a pause may take up to 60 seconds to wake the service. Subsequent requests are fast.
+
+The deployment uses `TOKEN_BUDGET_FLOOR=200`. When the NKENNEAi balance drops below that floor, the app degrades gracefully to English-only output rather than returning errors — audio and Swahili translation are skipped, the advice card still renders.
 
 33 tests, no network calls, 0 API tokens spent. Covers schema validation, diagnosis enforcement, confidence escalation, and few-shot determinism.
 
