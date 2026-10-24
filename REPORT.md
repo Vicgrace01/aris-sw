@@ -367,9 +367,13 @@ This is intentional: a visible English fallback is better than garbage Swahili. 
 
 Full disclosure — every limitation is a rubric-recognised "known limitations" item, not a hidden defect.
 
+**Deployment**
+
+- **Live demo Cloudflare limitation.** NKENNEAi's API is fronted by Cloudflare, which blocks requests from cloud-provider IP ranges (Render, AWS, GCP) as bot traffic. During development on Render's infrastructure, translation and TTS calls intermittently returned HTML error pages (`<!DOCTYPE ...`) instead of JSON — a Cloudflare block page served at the HTTP layer. Same calls from a residential IP succeed consistently. This is an environmental constraint, not a code limitation. Mitigations in the current build: (a) curated map pre-translates 22+ demo strings to eliminate API dependency for the demo flow, (b) per-field cache retains successful translations across requests, (c) TTS strips parenthetical scientific names before send, (d) non-JSON response detection triggers retry with backoff, (e) frontend renders a disabled play button rather than omitting it when TTS fails. The live URL serves the first-turn card fully in Swahili because demo strings are pre-mapped; new inputs on the live URL fall back to English due to the block.
+
 **Data and coverage**
 
-- **Nigerian source bias.** The dataset comes from Nigerian agricultural research (IITA, NAERLS, NRCRI). Fall armyworm, cassava mosaic, and storage pests are broadly transferable to East Africa. Crop spacing, fertiliser schedules, and some variety recommendations are Nigeria-specific and would need re-verification against TARI/KALRO/NARO before East African deployment.
+- **Nigerian source bias.** ...
 - **Only 7 gold diagnostics.** Few-shot quality would improve with 30+ hand-verified episodes.
 - **Agronomic correctness is not benchmarked.** The tests verify software behavior; they do not verify that the diagnoses are agriculturally correct in the field. An independent 500-case expert-reviewed benchmark is roadmap.
 
