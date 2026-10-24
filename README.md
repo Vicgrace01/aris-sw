@@ -68,19 +68,19 @@ Existing AI chatbots make it worse, not better: they produce confident prose tha
 | 🧠 **Structured advisory** | Every response is a validated JSON object, not prose |
 | 🛡️ **Safety by design** | Refuses pesticide/veterinary doses without field confirmation |
 | 🌍 **Bilingual** | SW/EN toggle switches both labels and content |
-| 📊 **Provenance** | Confidently-matched diagnoses cite `fact_ids` and source bodies; unmatched cases are marked `unconfirmed` with empty provenance |
-| 💾 **Cost-controlled** | Disk-cached responses; budget guard degrades gracefully |
+| 📊 **Provenance** | Confidently-matched diagnoses cite `fact_ids` and source bodies |
+| 💾 **Cost-controlled** | Disk-cached responses; pre-mapped demo strings; budget guard |
 | 🐳 **Deployable** | Multi-stage Docker, health check, structured logs |
 
 ### What the farmer sees
 
 ```
 ┌─────────────────────────────────────────────┐
-│ Utambuzi        Fall armyworm (Spodoptera)  │
-│ Hatua za haraka • Open the whorl of 10 …    │
-│                 • Contact extension officer │
-│ Usifanye        • Do not spray without …    │
-│ Peleka kwa …    If >20% of plants show …    │
+│ Utambuzi        Funza wa shina la mahindi   │
+│ Usifanye        Usitumie dawa yoyote bila   │
+│                 utambuzi uliothibitishwa…   │
+│ Peleka kwa …    Ikiwa dalili zinaenea kwa   │
+│                 zaidi ya 20% ya mimea…      │
 │                                             │
 │              🔊 Sikiliza kwa Kiswahili      │
 └─────────────────────────────────────────────┘
@@ -92,7 +92,7 @@ Existing AI chatbots make it worse, not better: they produce confident prose tha
 
 **Live:** [https://aris-sw.onrender.com](https://aris-sw.onrender.com)
 
-> ⚠️ Hosted on Render's free tier — sleeps after 15 minutes of inactivity. First request after a pause may take up to 60 seconds to wake. Subsequent requests are fast.
+> ⚠️ Hosted on Render's free tier — sleeps after 15 minutes of inactivity. First request after a pause may take up to 60 seconds to wake.
 
 **Try this input:**
 
@@ -102,7 +102,7 @@ Mahindi yangu yana matundu kwenye majani
 
 *("My maize has holes in the leaves.")*
 
-You'll get a structured advisory in Swahili, 2 triage questions as clickable chips, and a play button for the audio. Answer a question to watch the diagnosis narrow and confidence escalate.
+You'll get a structured advisory in Swahili, triage questions, and a play button for the audio.
 
 ---
 
@@ -123,7 +123,7 @@ Validated advisory
     ▼  Diagnosis whitelist enforcement + confidence escalation
 Verified advisory (or honest "unconfirmed" when no match)
     │
-    ▼  NKENNEAi Translation (batched; curated map + API fallback)
+    ▼  NKENNEAi Translation (per-field, curated map + API + retry)
 Swahili advisory
     │
     ▼  NKENNEAi Text-to-Speech
@@ -133,23 +133,20 @@ Swahili audio to farmer
 <details>
 <summary><strong>Request lifecycle in detail</strong></summary>
 
-A single farmer turn touches:
-
 1. **`POST /api/stt`** — NKENNEAi Speech-to-Text receives `audio/wav` multipart body → `{text, duration, language}`
 2. **`POST /api/chat`** with `{sessionId?, input}`:
-   - **Session resolution** — SQLite lookup or new session (nanoid ID)
-   - **Triage detection** — if `pending_triage` exists, input is an answer to the first queued question
-   - **Augmented context** — original complaint + prior triage answers
-   - **Few-shot selection** — 3 examples, deterministic by crop + symptom overlap. For diagnostic inputs, hard-filtered to `diagnostic_episode` records only
-   - **Groq reasoning** — Qwen 3.8 27B → JSON advisory (English)
-   - **Schema validation** — retry once with corrective prompt on failure
-   - **Diagnosis enforcement** — high-confidence keyword matches snap to canonical label; unmatched labels are preserved as `unconfirmed` with a triage question, never fabricated
-   - **Confidence escalation** — bump one level on confirmation discriminator (never on unsupported diagnoses)
-   - **Translation** — per-field, curated map preferred, sanity check on API output
-   - **Persistence** — advisory written to session, input cached to disk by hash
-3. **`POST /api/tts`** — NKENNEAi Text-to-Speech receives Swahili text → `audio/mpeg`
+   - Session resolution (SQLite)
+   - Triage detection — if pending question exists, input is the answer
+   - Few-shot selection (deterministic, crop + symptom overlap)
+   - Groq reasoning → JSON advisory (English)
+   - Schema validation with retry
+   - Diagnosis whitelist enforcement (confident matches snap + attach fact IDs; unmatched are preserved as `unconfirmed`)
+   - Confidence escalation on confirmation discriminators
+   - Translation: curated map → cached field → NKENNEAi API (with retry)
+   - Persistence to session + cache
+3. **`POST /api/tts`** — NKENNEAi TTS → `audio/mpeg` (parenthetical scientific names stripped before send)
 
-Typical warm latency: **2.5–4s** end-to-end. Voice-in adds ~1.2s for STT.
+Warm latency: **2.5–4s** end-to-end.
 
 </details>
 
@@ -157,7 +154,7 @@ Typical warm latency: **2.5–4s** end-to-end. Voice-in adds ~1.2s for STT.
 
 ## 🔌 NKENNEAi APIs Used
 
-| API | Endpoint | Role in core loop |
+| API | Endpoint | Role |
 |---|---|---|
 | **Speech-to-Text** | `POST /api/stt/v1/swahili/with-api-key` | Transcribes the farmer's voice |
 | **Translation** | `POST /api/translate/with-api-key` | Renders English advisory fields into Swahili |
@@ -166,13 +163,13 @@ Typical warm latency: **2.5–4s** end-to-end. Voice-in adds ~1.2s for STT.
 <details>
 <summary><strong>Per-API integration details</strong></summary>
 
-**STT** — multipart `audio_file`, 25 MB cap, WAV recommended (16-bit PCM). Handles `400` (missing field), `413` (oversized), `401` (invalid key). Typed input bypasses STT entirely — deliberate cost control.
+**STT** — multipart `audio_file`, 25 MB cap. Handles `400`, `413`, `401`. Typed input bypasses STT entirely — cost control.
 
-**Translation** — batched: all translatable fields from one advisory sent in a single call (~80% token saving vs per-field). Normalises both `translated_text` and `translatedText` — docs and runtime disagree. Sanity check rejects runaway generation and token loops.
+**Translation** — per-field, with three-tier fallback: curated map (0 tokens, 22+ pre-mapped strings), in-memory field cache, NKENNEAi API with 3-attempt retry + exponential backoff. All final fields hold Swahili or fall back to English with an `EN` marker.
 
-**TTS** — returns binary stream, not JSON. Checks `res.ok` before buffering. Failure is non-fatal: card renders, play button simply doesn't appear.
+**TTS** — binary stream. Parenthetical scientific names (`(Spodoptera frugiperda)`) are stripped before send — TTS engines break on them. Retry up to 3 times.
 
-The fourth NKENNEAi API (speech translation, `/api/st/v1/…`) is deliberately not used — it returns translated text, not a structured advisory, so the reasoning step is still required. Full rationale in [REPORT.md §3.4](REPORT.md).
+The fourth NKENNEAi API (speech translation, `/api/st/v1/…`) is deliberately not used — see [REPORT.md §3.4](REPORT.md) for reasoning.
 
 </details>
 
@@ -180,33 +177,36 @@ The fourth NKENNEAi API (speech translation, `/api/st/v1/…`) is deliberately n
 
 ## 🧬 Why This Is Not a Wrapper
 
-Three engineering decisions separate this from an API pass-through:
+**1. Curated Swahili for diagnoses and common advice.**
+NKENNEAi mistranslates scientific names — `Fall armyworm` → `Kuku wa mahindi` ("chickens of maize"). 22+ diagnosis and advice strings come from a hand-verified map. **Zero API calls for those strings.** No nonsense in the most visible fields.
 
-**1. Curated Swahili for diagnoses.**
-NKENNEAi machine-translates scientific names into garbage — `Fall armyworm` became `Kuku wa mahindi` ("chickens of maize") and `Spodoptera frugiperda` triggered a 30-repetition token loop. Sixteen common diagnosis labels come from a hand-verified map. **Zero tokens, zero nonsense in the most visible field.**
+**2. Diagnosis enforcement with an honest refusal path.**
+Groq occasionally invents plausible-sounding labels. When strong keyword overlap with a whitelist entry exists, we snap to canonical + attach real `fact_ids`. When it doesn't, the model's own label is preserved with `confidence: "unconfirmed"`, `provenance.fact_ids` cleared, and a `field_confirmation` triage question queued. **Never fabricated from array position.**
 
-**2. Diagnosis enforcement — with an honest refusal path.**
-Groq occasionally invents plausible-sounding labels (`Maize leaf spot`) that aren't in the dataset. When the label matches a whitelist entry by strong keyword overlap, it snaps to the canonical label and attaches real `fact_ids`. When it doesn't match, the system **does not fabricate** — the model's own label is preserved, confidence drops to `unconfirmed`, `provenance.fact_ids` is cleared, and a `field_confirmation` triage question is queued. The live demo returns `["FAW-001", "FAW-002", "FAW-003"]` because the demo case matches FAW keywords strongly. A fabricated case would return an empty fact list — by design.
+**3. Layered resilience against Cloudflare.**
+NKENNEAi's API is fronted by Cloudflare, which blocks cloud-provider IP ranges as bot traffic. On Render's infrastructure, translation and TTS calls intermittently return HTML error pages instead of JSON. The system:
+- Detects non-JSON responses and retries with backoff
+- Falls back to curated map / field cache before attempting the API
+- Renders disabled play button rather than missing button when TTS fails
+- Pre-maps all demo strings so the demo flow works regardless of network state
 
-**3. Budget-guarded public demo.**
-Deployed with `TOKEN_BUDGET_FLOOR=200`. When the NKENNEAi balance drops below the floor, the app degrades to English-only rather than returning errors. Judges testing the public URL cannot exhaust the allocation and see broken pages.
-
-Each of these is a defensive layer against a *specific observed failure*, not a hypothetical. Full evidence in [REPORT.md §5](REPORT.md).
+**4. Budget-guarded public demo.**
+`TOKEN_BUDGET_FLOOR=200`. When the NKENNEAi balance drops below the floor, the app degrades to English-only rather than returning errors. Public testing cannot exhaust the allocation.
 
 ---
 
 ## 🛠 Tech Stack
 
-| Layer | Choice | Why |
-|---|---|---|
-| Runtime | Node 22 | Native `fetch`, `node:test`, stable ESM |
-| Server | Express 4 | Minimal, well-understood, no magic |
-| Session store | `better-sqlite3` | Synchronous, zero-config, WAL mode |
-| Reasoning | Groq · Qwen 3.8 27B | Free tier, strict JSON mode, ~1.5s warm |
-| Voice | NKENNEAi STT / Translate / TTS | Only Swahili-capable stack available |
-| Logging | `pino` | Structured JSON, request-ID correlation |
-| Security | `helmet` + `cors` + `express-rate-limit` | Standard headers, per-IP throttling |
-| Deploy | Render + multi-stage Docker | Free tier, health check, non-root user |
+| Layer | Choice |
+|---|---|
+| Runtime | Node 22 (native `fetch`, `node:test`, ESM) |
+| Server | Express 4 |
+| Session store | `better-sqlite3` (WAL mode) |
+| Reasoning | Groq · Qwen 3.8 27B |
+| Voice | NKENNEAi STT / Translate / TTS |
+| Logging | `pino` (structured JSON, request-ID correlation) |
+| Security | `helmet`, `cors`, `express-rate-limit` |
+| Deploy | Render + multi-stage Docker |
 
 ---
 
@@ -221,17 +221,14 @@ node server.js            # http://localhost:3000
 ```
 
 <details>
-<summary><strong>Docker setup</strong></summary>
+<summary><strong>Docker</strong></summary>
 
 ```bash
 cp .env.production.example .env
-# fill in both API keys
 docker compose build
 docker compose up -d
-docker compose logs -f aris-sw
+curl http://localhost:3000/api/health
 ```
-
-Health check: `curl http://localhost:3000/api/health`
 
 </details>
 
@@ -242,11 +239,11 @@ Health check: `curl http://localhost:3000/api/health`
 |---|---|---|---|
 | `NKENNE_API_KEY` | ✅ | — | NKENNEAi auth |
 | `GROQ_API_KEY` | ✅ | — | Groq auth |
-| `NODE_ENV` | — | `development` | Toggles pretty logs, error sanitisation |
+| `NODE_ENV` | — | `development` | Pretty logs off, error sanitisation |
 | `PORT` | — | `3000` | Listen port |
 | `LOG_LEVEL` | — | `info` | pino level |
 | `GROQ_MODEL` | — | `qwen/qwen3.8-27b` | Reasoning model |
-| `GROQ_MAX_OUTPUT_TOKENS` | — | `400` | Output budget (OTPM ceiling) |
+| `GROQ_MAX_OUTPUT_TOKENS` | — | `400` | Output budget |
 | `RATE_LIMIT_MAX` | — | `30` | Requests/min/IP |
 | `TOKEN_BUDGET_FLOOR` | — | `200` | Budget guard threshold |
 | `SESSION_DB_PATH` | — | `data/sessions.db` | SQLite location |
@@ -267,15 +264,16 @@ npm test
 | File | Tests | Coverage |
 |---|---|---|
 | `test/schema-validator.test.js` | 12 | Advisory shape, type rejection, required fields |
-| `test/diagnosis-validator.test.js` | 14 | Whitelist snapping, honest no-fabrication fallback, fact-ID attachment, confidence escalation, unsupported-guard |
+| `test/diagnosis-validator.test.js` | 14 | Whitelist snapping, honest no-fabrication fallback, fact-ID attachment, confidence escalation |
 | `test/dataset.test.js` | 10 | Crop detection (EN/SW), determinism, gold preference, diagnostic-only filter |
 
 <details>
 <summary><strong>What is not tested, and why</strong></summary>
 
-- **NKENNEAi and Groq calls** — mocked by design, so the suite runs at zero token cost. Integration proof is the live demo and `TOKEN_LOG.md`.
-- **Browser flows** — manual verification during development. Playwright suite is roadmap.
-- **Field audio** — all STT tests used clean recordings. Real farmer audio (wind, dialect variation, background noise) is a known gap; disclosed in [REPORT.md §12](REPORT.md).
+- **NKENNEAi and Groq calls** — mocked by design (zero token cost). Integration proof is the live demo and TOKEN_LOG.md.
+- **Browser flows** — manual verification during development. Playwright is roadmap.
+- **Field audio** — STT tested with clean recordings only.
+- **Agronomic correctness** — software behavior is tested; field correctness requires an expert-reviewed benchmark (roadmap).
 
 </details>
 
@@ -289,32 +287,25 @@ aris-sw/
 ├── config.js                 Env validation, config object
 ├── lib/
 │   ├── agent.js              Session orchestration
-│   ├── dataset.js            Deterministic few-shot selection (diagnostic-only filter)
-│   ├── diagnosis-validator.js Whitelist + honest fallback + confidence escalation
+│   ├── dataset.js            Deterministic few-shot selection
+│   ├── diagnosis-validator.js Whitelist + honest fallback + escalation
 │   ├── groq.js               Reasoning + disk cache + retries
-│   ├── nkenne.js             NKENNEAi client + budget guard
-│   ├── translator.js         Curated map + per-field cache + sanity check
+│   ├── nkenne.js             NKENNEAi client + budget guard + retries
+│   ├── translator.js         Curated map + field cache + API fallback
 │   ├── schema-validator.js   Advisory contract validation
 │   ├── session-store.js      SQLite sessions
 │   ├── logger.js             Structured logging
 │   └── errors.js             Typed error codes
 ├── middleware/               Helmet, CORS, rate-limit, request-ID
-├── public/                   Chat UI (SW/EN toggle, triage chips, audio)
-├── schema/                   Full JSON Schema for advisory_episode
+├── public/                   Chat UI + voice note recorder
+├── schema/                   JSON Schema for advisory_episode
 ├── scripts/                  Migration, translation, healthcheck
 ├── test/                     36 tests
 ├── data/
 │   ├── advisory_episodes.train.jsonl   2,448 records
 │   └── gold_diagnostics.jsonl          7 gold episodes
-├── Dockerfile                Multi-stage build
-├── docker-compose.yml        One-command stack
-├── README.md                 ← you are here
-├── REPORT.md                 Technical deep dive
-├── ARCHITECTURE.md           System diagram + data flow
-├── API.md                    Endpoint reference
-├── TOKEN_LOG.md              Every NKENNEAi call, with rationale
-├── CONTRIBUTING.md           Setup, extension points
-└── LICENSE                   MIT
+├── Dockerfile, docker-compose.yml
+├── README.md, REPORT.md, ARCHITECTURE.md, API.md, TOKEN_LOG.md, CONTRIBUTING.md, LICENSE
 ```
 
 ---
@@ -323,39 +314,41 @@ aris-sw/
 
 | Document | What it answers |
 |---|---|
-| [**REPORT.md**](REPORT.md) | Full technical report: per-API failure surface, error handling matrix, dataset strategy, token economics, adoption path, 15 sections |
-| [**ARCHITECTURE.md**](ARCHITECTURE.md) | System diagram, request lifecycle, design decisions, extension points, security model |
+| [**REPORT.md**](REPORT.md) | Full technical report: per-API deep dive, error handling matrix, dataset strategy, token economics, adoption path, known limitations |
+| [**ARCHITECTURE.md**](ARCHITECTURE.md) | System diagram, request lifecycle, design decisions, security model |
 | [**API.md**](API.md) | Every endpoint, request/response shapes, error codes, rate limits |
-| [**TOKEN_LOG.md**](TOKEN_LOG.md) | Allocation, every call logged, efficiency measures, known limitations |
-| [**CONTRIBUTING.md**](CONTRIBUTING.md) | Local setup, how to add a diagnosis to the whitelist, code style |
+| [**TOKEN_LOG.md**](TOKEN_LOG.md) | Allocation, every call logged, efficiency measures |
+| [**CONTRIBUTING.md**](CONTRIBUTING.md) | Local setup, extension points, code style |
 
 ---
 
 ## 🛣 Roadmap
 
-| Priority | Item | Why it matters |
-|---|---|---|
-| P0 | Fact-ledger retrieval | Makes `provenance.fact_ids` fully literal instead of whitelist-derived |
-| P0 | Playwright E2E suite | Browser-flow regression against the live deploy |
-| P1 | Offline deployment (ARIS Qwen 1.5B on CPU) | Works where mobile data is prohibitively expensive |
-| P1 | WhatsApp Business API integration | Median farmer has WhatsApp, not email |
-| P2 | Extension-officer dashboard | Aggregate anonymised advisories into a regional outbreak heatmap |
-| P2 | Photo-based diagnosis | Farmers describe symptoms better with a photo |
-| P3 | Multi-language (Yoruba, Pidgin, Kikuyu) | Pending NKENNEAi availability |
+| Priority | Item |
+|---|---|
+| P0 | Fact-ledger retrieval for `provenance.fact_ids` |
+| P0 | Playwright E2E suite |
+| P0 | Session authorization (per-session bearer token) |
+| P1 | Offline deployment (ARIS Qwen 1.5B on CPU / Raspberry Pi) |
+| P1 | WhatsApp Business API integration |
+| P2 | Photo-based diagnosis |
+| P2 | Extension-officer dashboard |
+| P3 | Multi-language (Yoruba, Pidgin, Kikuyu) |
 
 ---
 
 ## ⚠️ Known Limitations
 
+- **Live demo Cloudflare limitation** — NKENNEAi's API is fronted by Cloudflare, which blocks requests from cloud-provider IP ranges (Render, AWS, GCP) as bot traffic. Translation and TTS work on residential IPs (all demo video recorded locally) but fall back to English or show a disabled audio button on the live deployment. Demo strings are pre-mapped in `lib/translator.js` so the first-turn card renders in Swahili on the live URL regardless of the API being blocked.
 - **Nigerian source bias** — dataset derives from IITA/NAERLS/NRCRI. FAW, CMD, and storage pests transfer to East Africa; crop spacing and fertiliser schedules are Nigeria-specific.
 - **Only 7 gold diagnostics** — few-shot quality improves with 30+ hand-verified episodes.
-- **STT untested against field audio** — clean recordings only; wind, dialect, and background noise are unproven.
-- **NKENNEAi translation of scientific names is unreliable** — mitigated by curated map + sanity check + English fallback.
+- **STT requires direct phone-mic recording** — voice note UI works (volume bars, preview, send), but the ASR quality depends on a proper mobile device microphone. Desktop-browser-plus-phone-speaker is not a supported recording path.
 - **Provenance is curated, not retrieved** — `fact_ids` come from whitelist entries, not a live fact ledger. Retrieval is roadmap.
 - **No persistent storage on free tier** — sessions and cache reset on redeploy.
-- **No user accounts** — IP-based rate limiting. Session access control is roadmap.
+- **No user accounts** — IP-based rate limiting.
 - **No photo diagnosis** — NKENNEAi has no vision API.
 - **Reasoning uses a general LLM, not the ARIS fine-tune** — latency trade-off; the 1.5B CPU model is the offline path.
+- **Offline deployment is not part of this submission** — separate ARIS product line for air-gapped contexts.
 
 Full disclosure with evidence: [REPORT.md §12](REPORT.md).
 
@@ -363,9 +356,7 @@ Full disclosure with evidence: [REPORT.md §12](REPORT.md).
 
 ## 🤝 Contributing
 
-Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, how to add a diagnosis to the whitelist, code style, and commit conventions.
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## 📄 License
 
