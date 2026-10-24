@@ -92,11 +92,7 @@ async function submitText() {
   await sendToServer(text);
 }
 
-/* ============================================================
-   VOICE NOTE RECORDING
-   Flow: click mic → volume bars + timer → click stop →
-         preview player + discard + send → send uploads to STT
-   ============================================================ */
+/* Voice note recording */
 
 let mediaRecorder = null;
 let recordedChunks = [];
@@ -172,7 +168,7 @@ function startVolumeMeter() {
     const avg = sum / dataArray.length;
     const level = Math.min(1, avg / 100);
 
-    bars.forEach((bar, i) => {
+    bars.forEach((bar) => {
       const wobble = 0.6 + Math.random() * 0.4;
       const h = Math.max(3, level * 32 * wobble);
       bar.style.height = h + 'px';
@@ -200,7 +196,7 @@ async function finalizeRecording() {
     resetToInputBar();
     return;
   }
-  showPreviewUI(null); // show "converting" state
+  showPreviewUI(null);
 
   const webmBlob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
   let wavBlob = null;
@@ -285,12 +281,8 @@ async function sendVoiceNote() {
     const data = await res.json();
     removeBubble(loadingId);
 
-    if (!res.ok) {
-      throw new Error(data.message || data.error || t('noSpeech'));
-    }
-    if (!data.text || !data.text.trim()) {
-      throw new Error(t('noSpeech'));
-    }
+    if (!res.ok) throw new Error(data.message || data.error || t('noSpeech'));
+    if (!data.text || !data.text.trim()) throw new Error(t('noSpeech'));
 
     if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
     previewBlob = null;
@@ -299,7 +291,6 @@ async function sendVoiceNote() {
   } catch (e) {
     removeBubble(loadingId);
     addErrorBubble(e.message);
-    // keep preview so user can discard and retry
   }
 }
 
@@ -308,11 +299,6 @@ function resetToInputBar() {
   voiceNotePanel.innerHTML = '';
   inputBar.hidden = false;
 }
-
-/* ============================================================
-   WAV encoding — matches Speech Studio behaviour:
-   native sample rate, mono, no amplification
-   ============================================================ */
 
 async function convertToWav(blob) {
   const arrayBuffer = await blob.arrayBuffer();
@@ -324,8 +310,8 @@ async function convertToWav(blob) {
 }
 
 function encodeWav(audioBuffer) {
-  const sampleRate = audioBuffer.sampleRate;  // native, no downsample
-  const numChannels = 1;                       // mono
+  const sampleRate = audioBuffer.sampleRate;
+  const numChannels = 1;
   const bitDepth = 16;
   const bytesPerSample = bitDepth / 8;
   const blockAlign = numChannels * bytesPerSample;
@@ -366,9 +352,7 @@ function encodeWav(audioBuffer) {
   return buffer;
 }
 
-/* ============================================================
-   Chat flow
-   ============================================================ */
+/* Chat flow */
 
 async function sendToServer(text) {
   addUserBubble(text);
@@ -532,19 +516,25 @@ async function requestTTS(advisory, messageId) {
     ...(advisory.advice?.do_not || []).map(x => x.text_sw || x.text_en),
     advisory.escalation?.trigger_sw || advisory.escalation?.trigger_en,
   ].filter(Boolean);
+
   if (!parts.length) return;
   const text = parts.join('. ');
+
   try {
     const res = await fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    attachPlayButton(messageId, url);
-  } catch {}
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      attachPlayButton(messageId, url);
+      return;
+    }
+  } catch { /* fall through */ }
+
+  attachPlayButton(messageId, null);
 }
 
 function attachPlayButton(messageId, url) {
@@ -555,9 +545,15 @@ function attachPlayButton(messageId, url) {
   const btn = document.createElement('button');
   btn.className = 'play-btn';
   btn.textContent = '🔊 ' + t('listenPlay');
-  btn.onclick = () => new Audio(url).play();
+  if (url) {
+    btn.onclick = () => new Audio(url).play();
+    lastAudioUrl = url;
+  } else {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.title = 'Audio temporarily unavailable';
+  }
   bubble.appendChild(btn);
-  lastAudioUrl = url;
 }
 
 function replayTTS() {
