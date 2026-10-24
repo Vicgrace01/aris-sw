@@ -3,6 +3,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 WORKDIR /app
 
 FROM base AS deps
+# Toolchain for node-gyp fallback of native modules (better-sqlite3).
+# The prebuilt binary is tried first; this only compiles if the download fails.
+# Kept in the deps stage only so the runtime image stays slim.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
