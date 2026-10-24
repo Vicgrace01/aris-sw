@@ -1,0 +1,229 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ARIS Swahili Advisory Episode",
+  "type": "object",
+  "required": ["episode_id", "schema_version", "language", "record_kind", "context", "provenance", "review"],
+  "additionalProperties": false,
+  "properties": {
+    "episode_id": { "type": "string", "pattern": "^SW-EP-[0-9]{4,}$" },
+    "schema_version": { "const": "agentic-v1" },
+    "language": { "enum": ["sw", "en"] },
+    "channel": { "enum": ["voice", "text", "chat"] },
+    "record_kind": { "enum": ["diagnostic_episode", "fact_only", "refusal"] },
+    "legacy_system_prompt": { "type": "string" },
+    "context": {
+      "type": "object",
+      "required": ["crop", "chief_complaint_en"],
+      "properties": {
+        "crop": { "type": ["string", "null"] },
+        "growth_stage": { "type": ["string", "null"] },
+        "location": {
+          "type": "object",
+          "properties": {
+            "country": { "type": ["string", "null"] },
+            "region": { "type": ["string", "null"] },
+            "agro_zone": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "farm_size_ha": { "type": ["number", "null"] },
+        "chief_complaint_en": { "type": "string" },
+        "chief_complaint_sw": { "type": ["string", "null"] },
+        "known_facts": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "triage": {
+      "type": ["object", "null"],
+      "required": ["questions", "missing_discriminators"],
+      "properties": {
+        "observed_signs": { "type": "array", "items": { "type": "string" } },
+        "missing_discriminators": { "type": "array", "items": { "type": "string" } },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "ask_en"],
+            "properties": {
+              "field": { "type": "string" },
+              "ask_en": { "type": "string" },
+              "ask_sw": { "type": ["string", "null"] },
+              "why": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnosis": {
+      "type": ["object", "null"],
+      "required": ["primary", "confidence"],
+      "properties": {
+        "primary": {
+          "type": "object",
+          "required": ["label", "confidence"],
+          "properties": {
+            "label": { "type": "string" },
+            "label_sw": { "type": ["string", "null"] },
+            "confidence": { "enum": ["confirmed", "likely", "possible", "unconfirmed"] },
+            "fact_ids": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "differentials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "ruled_out_because"],
+            "properties": {
+              "label": { "type": "string" },
+              "ruled_out_because": { "type": "string" },
+              "fact_ids": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "confidence": { "enum": ["confirmed", "likely", "possible", "unconfirmed"] },
+        "confidence_basis": { "type": "string" },
+        "confidence_ceiling_reason": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "advice": {
+      "type": ["object", "null"],
+      "required": ["immediate", "preventive", "do_not"],
+      "properties": {
+        "immediate": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action_en"],
+            "properties": {
+              "action_en": { "type": "string" },
+              "action_sw": { "type": ["string", "null"] },
+              "timeframe": { "type": ["string", "null"] },
+              "fact_ids": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "preventive": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action_en"],
+            "properties": {
+              "action_en": { "type": "string" },
+              "action_sw": { "type": ["string", "null"] },
+              "timeframe": { "type": ["string", "null"] },
+              "fact_ids": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "do_not": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text_en"],
+            "properties": {
+              "text_en": { "type": "string" },
+              "text_sw": { "type": ["string", "null"] },
+              "reason": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "safety_caveats": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "escalation": {
+      "type": ["object", "null"],
+      "required": ["trigger_en", "referral"],
+      "properties": {
+        "trigger_en": { "type": "string" },
+        "trigger_sw": { "type": ["string", "null"] },
+        "referral": { "type": "string" },
+        "urgency": { "enum": ["low", "medium", "high"] }
+      },
+      "additionalProperties": false
+    },
+    "follow_up": {
+      "type": ["object", "null"],
+      "properties": {
+        "check_in_days": { "type": "integer", "minimum": 1 },
+        "success_indicator_en": { "type": "string" },
+        "success_indicator_sw": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "fact_body": {
+      "type": ["object", "null"],
+      "properties": {
+        "answer_en": { "type": "string" },
+        "answer_sw": { "type": ["string", "null"] },
+        "multi_turn": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "content"],
+            "properties": {
+              "role": { "enum": ["user", "assistant"] },
+              "content": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "topic_tags": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "refusal": {
+      "type": ["object", "null"],
+      "required": ["reason_en"],
+      "properties": {
+        "reason_en": { "type": "string" },
+        "reason_sw": { "type": ["string", "null"] },
+        "category": { "enum": ["medical", "veterinary_dose", "out_of_scope", "live_data", "insufficient_info", "unknown_crop"] },
+        "redirect_to": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["fact_ids", "source_names"],
+      "properties": {
+        "fact_ids": { "type": "array", "items": { "type": "string" } },
+        "source_names": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "policy_trace": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "action"],
+        "properties": {
+          "step": { "type": "string" },
+          "action": { "type": "string" },
+          "args": { "type": "object" },
+          "result": {}
+        },
+        "additionalProperties": false
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": ["needs_human", "source_region_mismatch"],
+      "properties": {
+        "needs_human": { "type": "boolean" },
+        "human_notes": { "type": "string" },
+        "source_region_mismatch": { "type": "boolean" },
+        "original_index": { "type": "integer" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
