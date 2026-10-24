@@ -15,11 +15,11 @@ ARIS-SW is a voice-first agricultural advisor for Swahili-speaking smallholder f
 The system integrates three NKENNEAi APIs (Speech-to-Text, Translation, Text-to-Speech) in the core request path and adds four engineering layers that make it production-shaped rather than a wrapper:
 
 1. A **schema-validated advisory contract** with retry-on-failure
-2. A **diagnosis whitelist** that snaps hallucinated labels to curated diagnoses and attaches provenance fact IDs
+2. A **diagnosis whitelist** that snaps hallucinated labels to curated diagnoses when a confident keyword match exists, and honestly marks unmatched labels as `unconfirmed` with empty provenance — never fabricating a diagnosis from an array position
 3. A **curated Swahili translation map** with a sanity check that rejects machine-translation garbage
 4. A **token budget guard** that degrades gracefully to English-only rather than erroring in front of public users
 
-The system was deployed on Render's free tier with a persistent SQLite session store, disk-cached Groq responses (0-token repeat inputs), and 33 automated tests that run without network calls.
+The system was deployed on Render's free tier with a persistent SQLite session store, disk-cached Groq responses (0-token repeat inputs), and 36 automated tests that run without network calls.
 
 **Deployment posture:** production-ready single service, ~180 MB container, cold-start ~30s on free tier, warm requests <200ms (excluding upstream API calls).
 
@@ -70,11 +70,11 @@ A single farmer turn touches the following subsystems:
    - **Session resolution** — SQLite lookup or new session creation (nanoid ID)
    - **Triage detection** — if `pending_triage` row exists for this session, the input is interpreted as an answer to the first queued question
    - **Augmented context** — original complaint + all prior triage answers prepended to the reasoning input
-   - **Few-shot selection** — 3 examples chosen deterministically by crop + symptom term overlap
+   - **Few-shot selection** — 3 examples chosen deterministically by crop + symptom term overlap. For diagnostic inputs (crop detected + symptom words present), the candidate pool is hard-filtered to `diagnostic_episode` records only — `fact_only` and `refusal` records cannot crowd out gold diagnostics
    - **Groq reasoning** — Qwen 3.8 27B with system prompt + few-shots → JSON advisory (English only)
    - **Schema validation** — retry once with corrective prompt on validation failure
-   - **Diagnosis enforcement** — snap any invented label to the curated whitelist
-   - **Confidence escalation** — bump one level if the input contains a confirmation discriminator
+   - **Diagnosis enforcement** — confident keyword matches snap to canonical whitelist entry and attach `fact_ids`; unmatched labels are preserved as `unconfirmed` with provenance cleared and a `field_confirmation` triage question queued
+   - **Confidence escalation** — bump one level if the input contains a confirmation discriminator (never on `unsupported` diagnoses)
    - **Translation** — per-field via NKENNEAi, curated map preferred, sanity check on NKENNEAi output
    - **Persistence** — advisory written to session, input cached to disk by hash
 3. **`POST /api/tts`** — NKENNEAi Text-to-Speech receives the Swahili advisory text and returns an `audio/mpeg` stream.
@@ -167,6 +167,7 @@ The 1.5B ARIS model remains available and is the deployment path for offline / a
 
 - System prompt defines the required JSON schema, the safety rules (never prescribe a dose), the confidence vocabulary, and the refusal cases (out-of-scope, medical, live data).
 - The diagnosis grounding rule is repeated three times in the prompt — model adherence is a known weakness on single-instance instructions.
+- A `FEW-SHOT USAGE` constraint explicitly forbids introducing a diagnosis label not present in the examples.
 - Concision rule constrains output to under 350 tokens, which is enforced by `max_tokens: 400` at the API level and balanced against Groq's 1,000-OTPM free-tier rate limit.
 
 **Output constraints:**
@@ -179,7 +180,7 @@ The 1.5B ARIS model remains available and is the deployment path for offline / a
 
 ## 5. Error handling and resilience
 
-Every failure mode has an explicit detection and response. The rubric's 16–20 band requires exactly this.
+Every failure mode has an explicit detection and response.
 
 | Failure mode | Detection | Response | User-visible effect |
 |---|---|---|---|
@@ -194,7 +195,8 @@ Every failure mode has an explicit detection and response. The rubric's 16–20 
 | NKENNEAi translation network error | `fetch` throws | Same — English fallback | English text |
 | NKENNEAi TTS failure | Non-200 response | Do not attach play button | Card renders, no audio |
 | NKENNEAi token budget exhausted | `lastTokensRemaining < 200` | `assertBudget` throws before call | English-only advisory, logged |
-| Diagnosis invented by Groq | `enforceDiagnosis` finds no keyword match | Snap to first valid diagnosis for crop, set confidence to `possible` | Diagnosed, but conservative |
+| Diagnosis invented by Groq (no keyword match) | `enforceDiagnosis` finds no whitelist keyword overlap | Keep model's own label, set `confidence: "unconfirmed"`, clear `provenance.fact_ids`, add `field_confirmation` triage question | Diagnosis preserved as unconfirmed; field confirmation requested before any treatment advice |
+| Diagnosis ambiguous (weak keyword match) | `enforceDiagnosis` finds partial overlap but no confident match | Same as above — honest unconfirmed, not a manufactured label | Same as above |
 | Missing schema field after defensive defaults | `validateAdvisory` catches | Retry, then error | None if retry succeeds |
 | Session not found | `getSession` returns null | Create new session transparently | None |
 | Invalid request body | `Errors.validation` throws | 400 with structured error | Error bubble in chat |
@@ -212,14 +214,14 @@ Every one of these paths is exercised by the code, and the retry paths are visib
 
 - 335 records are templated diagnostic skeletons (`"label": "possible disorder in maize"`, generic triage question). These are excluded — training on them teaches the model to produce templates.
 - 2,031 `fact_only` records (spacing, fertiliser arithmetic, single-fact lookups) and 82 `refusal` records (medical, live data, out-of-scope) are retained.
-- 7 hand-written **gold diagnostic episodes** (`data/gold_diagnostics.jsonl`) cover FAW/stem borer (maize), cassava mosaic, bacterial wilt (tomato), striga, cowpea storage pest, groundnut rosette, rice yellow mottle. These are the quality bar; the few-shot selector prefers them.
+- 7 hand-written **gold diagnostic episodes** (`data/gold_diagnostics.jsonl`) cover FAW/stem borer (maize), cassava mosaic, bacterial wilt (tomato), striga, cowpea storage pest, groundnut rosette, rice yellow mottle. These are the quality bar.
 
 **Selection algorithm** (`lib/dataset.js → selectFewShots`):
 
-- Compute relevance score per candidate: +10 for crop match, +2 per overlapping symptom term, +3 for `diagnostic_episode` kind, +5 for `refusal` on out-of-scope cues.
-- Tie-break by SHA-256 of `(input | episode_id)` — deterministic, not random. Same input → same few-shots → same reasoning output, always.
+- **Hard filter for diagnostic inputs.** When a crop is detected and the input contains symptom words, the candidate pool is restricted to `diagnostic_episode` records (gold + any clean diagnostics from the main dataset). `fact_only` records cannot crowd out gold examples.
+- **Relevance scoring:** +10 for crop match, +2 per overlapping symptom term, +3 for `diagnostic_episode` kind, +5 for `refusal` on out-of-scope cues.
+- **Deterministic tie-break** via SHA-256 of `(input | episode_id)` — same input → same few-shots → same reasoning output, always.
 - Take top 3.
-- If the input is diagnostic (crop + symptom words), gold diagnostics score highest and are selected first. If non-diagnostic, `refusal` and `fact_only` records fill the slot.
 
 **Why determinism matters:** a demo that produces different output on each run looks unstable. Deterministic selection makes the demo reproducible and makes caching effective (cache hit depends on same-input-same-output).
 
@@ -234,14 +236,15 @@ Every one of these paths is exercised by the code, and the retry paths are visib
 - `lib/diagnosis-validator.js` maintains a curated whitelist of diagnoses per crop (7 crops × 2–3 diagnoses each = 16 total), each with `canonical` label, Swahili `sw` label, `keywords` array, `factIds`, and `sources`.
 - Post-processing runs `enforceDiagnosis(advisory, crop)`:
   1. Score every whitelist entry against the model's label using keyword overlap.
-  2. If the top score ≥ 3, snap to that entry.
-  3. If no entry scores, try promoting a whitelist match from `diagnosis.differentials`.
-  4. If still nothing, snap to the first valid entry for that crop with `confidence: "possible"` and a note that symptoms don't uniquely match.
-- **`provenance.fact_ids` and `provenance.source_names` are populated from the whitelist entry**, not from Groq. This is why the live demo returns `["FAW-001", "FAW-002", "FAW-003"]` — real IDs, not empty arrays.
+  2. If the top score ≥ 3, snap to that entry — this is a confident match, and provenance is attached from the whitelist entry.
+  3. If no entry scores ≥ 3, try promoting a whitelist match from `diagnosis.differentials` — but only if the differential's score is ≥ 5. Weak matches are not licenses to snap.
+  4. If still nothing, **do not fabricate a diagnosis**. Keep the model's own label, set `confidence: "unconfirmed"`, clear `provenance.fact_ids`, mark the diagnosis as `unsupported: true`, and add a `field_confirmation` triage question so the farmer can describe symptoms in more detail before any treatment advice is given. The first-entry fallback that previously existed in this code path was removed — an unsupported label must never become a specific diagnosis by virtue of its position in an array.
+- **`provenance.fact_ids` and `provenance.source_names` are populated from the whitelist entry only when a confident match is found**, not from Groq. On an unmatched label, provenance is cleared entirely rather than inherited from a fallback. This is why the live demo returns `["FAW-001", "FAW-002", "FAW-003"]` — real IDs, not empty arrays — while an unsupported label returns `[]` with `unsupported: true`.
 
 **Confidence escalation** (`bumpConfidenceOnAnswer`):
 
 - When the current turn is an answer to a triage question AND the answer contains confirmation vocabulary ("yes", "ndio", "frass", "kinyesi", "caterpillar", "viwavi"), bump confidence one level: `unconfirmed → possible → likely → confirmed`.
+- **Never fires on a diagnosis marked `unsupported: true`** — a confirmation keyword cannot promote a diagnosis that failed whitelist matching.
 - Never exceeds `confirmed`; never bumps on non-confirmation answers.
 - This is what makes the multi-turn flow feel like a real consultation instead of a second guess.
 
@@ -285,21 +288,22 @@ This is intentional: a visible English fallback is better than garbage Swahili. 
 
 **Framework:** Node's built-in `node:test` runner. No external test library, no mocks library — everything is either a pure function or a mocked module.
 
-**33 tests across three files:**
+**36 tests across three files:**
 
 | File | Tests | What's covered |
 |---|---|---|
 | `test/schema-validator.test.js` | 12 | Valid advisory passes; missing `record_kind` fails; invalid `record_kind` fails; null/array/string fail; `advice.immediate` as strings fails; missing `ruled_out_because` fails; invalid confidence fails; missing `text_en` fails; missing `refusal.reason_en` fails; missing `escalation.trigger_en` fails |
-| `test/diagnosis-validator.test.js` | 11 | Snap invented label to whitelist; fact IDs attached after snap; stem borer keyword match; CMD cassava case; `enforced: false` for unknown crop; `enforced: false` without diagnosis; four confidence escalation cases; non-bump on non-confirmation; no bump above `confirmed` |
-| `test/dataset.test.js` | 10 | Dataset loads with expected counts; crop detection EN + SW; null for unknown crop; few-shot count; language detection; **determinism** (same input → same selection); gold diagnostic preference; mixed crop handling |
+| `test/diagnosis-validator.test.js` | 14 | High-confidence keyword match snaps to canonical; fact IDs attached after confident match; **"does NOT fabricate a diagnosis from an unmatched label"**; `field_confirmation` triage question added on unsupported; question not duplicated if already present; cassava CMD case; `enforced: false` for unknown crop; `enforced: false` without diagnosis; four confidence escalation cases; non-bump on non-confirmation; **refuses to bump an unsupported diagnosis**; no bump above `confirmed` |
+| `test/dataset.test.js` | 10 | Dataset loads with expected counts; crop detection EN + SW; null for unknown crop; few-shot count; language detection; **determinism**; gold diagnostic preference; mixed crop handling |
 
 **What the tests don't cover (disclosed):**
 
 - NKENNEAi API calls — mocked via function injection, not exercised live. The demo video is the integration proof; a production suite would add `nock`-based HTTP fixtures.
 - Groq reasoning — same reason. Each test suite run costs 0 tokens by design.
 - End-to-end browser flows — manual testing during development. Playwright suite is roadmap.
+- Agronomic correctness — the tests verify that the code does what it claims, not that the claims are agriculturally correct in the field. That requires an independent expert-reviewed benchmark; see §13.
 
-**Running the tests:** `npm test` — 33 tests, ~900ms, 0 network calls, 0 API tokens.
+**Running the tests:** `npm test` — 36 tests, ~900ms, 0 network calls, 0 API tokens.
 
 ---
 
@@ -365,21 +369,27 @@ Full disclosure — every limitation is a rubric-recognised "known limitations" 
 
 **Data and coverage**
 
-- **Nigerian source bias.** The dataset comes from Nigerian agricultural research (IITA, NAERLS, NRCRI). Fall armyworm, cassava mosaic, and storage pests are broadly transferable to East Africa. Crop spacing, fertiliser schedules, and some variety recommendations are Nigeria-specific and would need re-verification against TARI/KALRO/NARO before East African deployment. Disclosed in the dataset card.
-- **Only 7 gold diagnostics.** Few-shot quality would improve with 30+ hand-verified episodes. The 7 cover the crops the demo exercises; expanding is roadmap.
+- **Nigerian source bias.** The dataset comes from Nigerian agricultural research (IITA, NAERLS, NRCRI). Fall armyworm, cassava mosaic, and storage pests are broadly transferable to East Africa. Crop spacing, fertiliser schedules, and some variety recommendations are Nigeria-specific and would need re-verification against TARI/KALRO/NARO before East African deployment.
+- **Only 7 gold diagnostics.** Few-shot quality would improve with 30+ hand-verified episodes.
+- **Agronomic correctness is not benchmarked.** The tests verify software behavior; they do not verify that the diagnoses are agriculturally correct in the field. An independent 500-case expert-reviewed benchmark is roadmap.
 
 **API-level**
 
-- **STT untested against field audio.** All STT tests used recorded audio with clean conditions. Real farmer audio includes wind, dialect variation, and background noise. A production build would add a confidence score and a "please re-record" path when STT output is short or garbled.
+- **STT untested against field audio.** All STT tests used recorded audio with clean conditions. Real farmer audio includes wind, dialect variation, and background noise.
 - **NKENNEAi translation of scientific names is unreliable.** Curated map addresses the visible fields; free-form action items may occasionally mistranslate and are defended by the sanity check + English fallback.
-- **Only Swahili supported.** NKENNEAi's other languages (Yoruba, Nigerian Pidgin) were documented but out of scope for this event. Documented as roadmap.
+- **Only Swahili supported.** NKENNEAi's other languages (Yoruba, Nigerian Pidgin) were documented but out of scope for this event.
+
+**Provenance**
+
+- **Provenance is curated, not retrieved.** `fact_ids` are attached from whitelist entries when a confident keyword match exists, not looked up from a fact ledger in real time. The fact ledger exists in the ARIS parent repository; wiring it into a retrieval pipeline is roadmap. **Judges assessing provenance should evaluate it as "curated and consistent" rather than "retrieved and verified."**
 
 **System-level**
 
-- **No persistent storage on free tier.** Sessions and cache reset on redeploy. Acceptable for the demo; not for production.
-- **No user accounts.** Rate limit is IP-based. A determined bad actor could exhaust the shared budget. The budget guard limits blast radius.
-- **No photos.** NKENNEAi has no vision API. Photo-based diagnosis is a real gap — farmers often describe symptoms better with a photo. Roadmap.
-- **Reasoning model is a general-purpose LLM, not a fine-tuned agricultural model.** The ARIS Qwen 1.5B fine-tune exists but isn't deployed in the hackathon demo for latency reasons.
+- **No persistent storage on free tier.** Sessions and cache reset on redeploy.
+- **No user accounts.** Rate limit is IP-based. Session access control (per-session bearer token) is designed but not shipped; disclosed as roadmap.
+- **No photos.** NKENNEAi has no vision API.
+- **Reasoning model is a general-purpose LLM, not a fine-tuned agricultural model.** The ARIS Qwen 1.5B fine-tune exists but isn't deployed in the hackathon demo for latency reasons. It is the offline deployment path.
+- **Offline deployment is not part of this submission.** It is a separate ARIS product line (Qwen 1.5B on CPU, no network required), built for air-gapped contexts. This submission is the hosted/API variant.
 
 **Testing**
 
@@ -389,20 +399,22 @@ Full disclosure — every limitation is a rubric-recognised "known limitations" 
 
 ## 13. Future work and adoption path
 
-**Path to adoption (Impact / 10-point criterion):**
+**Path to adoption:**
 
 1. **Pilot with an existing extension network.** The dataset is already aligned with IITA and NAERLS materials; a natural partner is an NGO already using those sources (e.g. Sasakawa Africa Association, Farm Africa). Deployment: 50 extension officers, 500 farmers, 3 months, measure yield variance against a control group.
-2. **Offline-first deployment for low-connectivity regions.** The ARIS Qwen 1.5B fine-tune runs on CPU at ~8s per advisory. Bundled with a local whisper.cpp STT and a small TTS, the entire system can run on a Raspberry Pi 4 with no internet. This is the deployment path for areas where mobile data is prohibitively expensive — a real constraint in rural Tanzania and Mozambique.
-3. **WhatsApp Business API integration.** The median East African smallholder farmer has WhatsApp but not email. A bot in the existing WhatsApp interface removes the need for the farmer to visit a website or install an app.
-4. **Extension-officer dashboard.** Aggregate anonymous advisories into a heatmap of what's happening in which region. This turns the tool from a per-farmer service into a regional early-warning system for pest outbreaks.
+2. **Offline-first deployment for low-connectivity regions.** The ARIS Qwen 1.5B fine-tune runs on CPU at ~8s per advisory. Bundled with a local whisper.cpp STT and a small TTS, the entire system can run on a Raspberry Pi 4 with no internet.
+3. **WhatsApp Business API integration.** The median East African smallholder farmer has WhatsApp but not email.
+4. **Extension-officer dashboard.** Aggregate anonymous advisories into a heatmap of what's happening in which region.
 
 **Technical roadmap:**
 
-- **Fact-ledger retrieval.** Populate `provenance.fact_ids` from a real ledger with retrieval scoring, replacing the current whitelist-derived IDs. This makes the "grounded on verified sources" claim fully literal instead of structural.
-- **Playwright end-to-end tests.** Browser-flow regression suite (voice → advisory → triage → audio) against the live deployed app.
+- **Fact-ledger retrieval.** Populate `provenance.fact_ids` from a real ledger with retrieval scoring, replacing the current whitelist-derived IDs.
+- **Playwright end-to-end tests.** Browser-flow regression suite against the live deployed app.
+- **Session authorization.** Per-session bearer token; hashed in SQLite; required on `GET /api/session/:id`.
+- **Agronomic correctness benchmark.** 500-case independent expert-reviewed test suite.
 - **Multi-language expansion.** Yoruba, Nigerian Pidgin, Kikuyu — pending NKENNEAi API availability.
-- **Vision-based diagnosis.** Photo upload for symptom confirmation. Requires either a vision API or an on-device model; both are roadmap.
-- **Confidence calibration.** Current confidence escalation is rule-based. A calibrated classifier trained on the ARIS corpus would produce honest probabilities instead of heuristic levels.
+- **Vision-based diagnosis.** Photo upload for symptom confirmation.
+- **Confidence calibration.** Rule-based escalation replaced by a calibrated classifier.
 
 ---
 
