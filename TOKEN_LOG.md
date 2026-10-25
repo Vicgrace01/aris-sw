@@ -128,7 +128,7 @@ The gap between the two — roughly 3–4× reduction — is the sum of the cura
 
 ## Current deployment state
 
-**Balance: 0 tokens.** The live URL at https://aris-sw.onrender.com continues to serve the demo flow because:
+**Balance: 2 tokens.** The live URL at https://aris-sw.onrender.com continues to serve the demo flow because:
 
 - The curated Swahili map covers the primary diagnosis (`Funza wa shina la mahindi`) and safety advice strings — no API call needed
 - Response cache (`data/groq-cache.jsonl`) survives while the Render container is alive
