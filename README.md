@@ -333,7 +333,35 @@ aris-sw/
 | P1 | WhatsApp Business API integration |
 | P2 | Photo-based diagnosis |
 | P2 | Extension-officer dashboard |
-| P3 | Multi-language (Yoruba, Pidgin, Kikuyu) |
+| P3 | Multi-language (Yoruba, Pidgin, Kikuyu) |## 🛣 Roadmap
+
+### Completed since initial submission
+
+| Item | Audit severity | Status |
+|---|---|---|
+| Evidence-gated diagnosis matching (single keyword can no longer commit a diagnosis) | Critical | ✅ Closed |
+| Confidence escalation requires evidence term; rejects negative answers | High | ✅ Closed |
+| Session ownership tokens on retrieval and close endpoints | High | ✅ Closed |
+| Null-token exploit on legacy sessions | High | ✅ Closed |
+| Crop vocabulary corrected (`biringanya` → eggplant, `choroko` → mung bean) | Medium | ✅ Closed |
+
+### Next iteration (pre-commercial)
+
+| Priority | Item | Rationale |
+|---|---|---|
+| P0 | Fact-ledger retrieval for `provenance.fact_ids` | Turns "grounded in verified sources" from structural claim to literal truth |
+| P0 | Independent 500-case expert-reviewed benchmark | Proves diagnostic accuracy and dangerous-advice rate against a held-out set |
+| P0 | Field voice testing with target-language farmers | Validates STT against real accents, background noise, agricultural vocabulary |
+| P1 | Field validation with extension officers | Confirms the triage-first workflow matches how advisors actually reason |
+| P1 | Offline deployment (ARIS Qwen 1.5B on CPU / Raspberry Pi) | Serves regions where mobile data is prohibitive |
+| P1 | WhatsApp Business API integration | Median East African smallholder has WhatsApp, not email |
+| P2 | Diagnostic coverage expansion (30+ gold episodes across 15+ crops) | Improves few-shot quality and reduces false-canonical risk |
+| P2 | Photo-based diagnosis | Requires NKENNEAi vision API or on-device model |
+| P3 | Multi-language expansion (Yoruba, Pidgin, Kikuyu) | Pending NKENNEAi language availability |
+
+### Commercialisation
+
+A 16-week path from working demo to commercially deployable product is documented in [REPORT.md §16](REPORT.md). It covers seven workstreams — agronomic reliability, product architecture, language and voice validation, security and privacy, production operations, commercial model, and phased rollout — and includes a 12-item launch-readiness checklist with honest current state.
 
 ---
 
