@@ -259,7 +259,7 @@ curl http://localhost:3000/api/health
 npm test
 ```
 
-**36 tests · ~900ms · zero network calls · zero API tokens**
+**40+ tests · ~900ms · zero network calls · zero API tokens**
 
 | File | Tests | Coverage |
 |---|---|---|
