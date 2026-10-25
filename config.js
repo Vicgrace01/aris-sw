@@ -15,6 +15,7 @@ function int(name, fallback) {
 }
 
 const env = optional('NODE_ENV', 'development');
+const MOCK_NKENNE = ['true', '1', 'yes'].includes(String(process.env.MOCK_NKENNE || '').toLowerCase());
 
 export const config = Object.freeze({
   env,
@@ -22,9 +23,10 @@ export const config = Object.freeze({
   port: int('PORT', 3000),
 
   nkenne: Object.freeze({
-    apiKey: required('NKENNE_API_KEY'),
+    apiKey: MOCK_NKENNE ? 'mock' : required('NKENNE_API_KEY'),
     baseUrl: optional('NKENNE_BASE_URL', 'https://developers-api.nkenne.ai'),
     timeoutMs: int('NKENNE_TIMEOUT_MS', 30000),
+    mock: MOCK_NKENNE,
   }),
 
   groq: Object.freeze({

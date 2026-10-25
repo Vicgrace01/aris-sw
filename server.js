@@ -21,7 +21,7 @@ import * as nkenne from './lib/nkenne.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-logger.info('boot.start', { env: config.env, model: config.groq.model });
+logger.info('boot.start', { env: config.env, model: config.groq.model, mock: config.nkenne.mock });
 
 await loadDataset(
   path.resolve(__dirname, config.dataset.episodesPath),
@@ -53,6 +53,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
     env: config.env,
+    mode: config.nkenne.mock ? 'mock' : 'live',
     uptime: Math.round(process.uptime()),
     dataset: getDatasetStats(),
     tokens: nkenne.getSessionStats(),
@@ -130,7 +131,7 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 const server = app.listen(config.port, () => {
-  logger.info('boot.ready', { port: config.port, url: `http://localhost:${config.port}` });
+  logger.info('boot.ready', { port: config.port, url: `http://localhost:${config.port}`, mock: config.nkenne.mock });
 });
 
 function shutdown(signal) {
