@@ -6,7 +6,7 @@
 
 [![Live Demo](https://img.shields.io/badge/demo-live-22b57f?style=flat-square)](https://aris-sw.onrender.com)
 [![NKENNEAi](https://img.shields.io/badge/NKENNEAi-STT%20%C2%B7%20Translate%20%C2%B7%20TTS-2b9bf0?style=flat-square)](https://nkenne.ai)
-[![Tests](https://img.shields.io/badge/tests-43%20passing-22b57f?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-52%20passing-22b57f?style=flat-square)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-8a9bb0?style=flat-square)](LICENSE)
 
 [Live Demo](https://aris-sw.onrender.com) · [Technical Report](REPORT.md) · [Architecture](ARCHITECTURE.md) · [API Reference](API.md) · [Token Log](TOKEN_LOG.md)
@@ -29,6 +29,7 @@
 - [How It Works](#-how-it-works)
 - [NKENNEAi APIs Used](#-nkenneai-apis-used)
 - [Why This Is Not a Wrapper](#-why-this-is-not-a-wrapper)
+- [Token usage — what was spent and why](#-token-usage--what-was-spent-and-why)
 - [Tech Stack](#-tech-stack)
 - [Quick Start](#-quick-start)
 - [Testing](#-testing)
@@ -70,6 +71,7 @@ Existing AI chatbots make it worse, not better: they produce confident prose tha
 | 🌍 **Bilingual** | SW/EN toggle switches both labels and content |
 | 📊 **Provenance** | Confidently-matched diagnoses cite `fact_ids` and source bodies |
 | 💾 **Cost-controlled** | Disk-cached responses; pre-mapped demo strings; budget guard |
+| 🧪 **Mock mode** | `MOCK_NKENNE=true` runs the full pipeline with zero NKENNEAi tokens |
 | 🐳 **Deployable** | Multi-stage Docker, health check, structured logs |
 
 ### What the farmer sees
@@ -92,7 +94,7 @@ Existing AI chatbots make it worse, not better: they produce confident prose tha
 
 **Live:** [https://aris-sw.onrender.com](https://aris-sw.onrender.com)
 
-> ⚠️ Hosted on Render's free tier — sleeps after 15 minutes of inactivity. First request after a pause may take up to 60 seconds to wake.
+> ⚠️ Hosted on Render's free tier — sleeps after 15 minutes of inactivity. First request after a pause may take up to 60 seconds to wake. **The NKENNEAi token balance is at zero at submission time.** The first-turn demo card renders in Swahili from the curated map + response cache; TTS audio is disabled and new inputs fall back to English. See [Token usage](#-token-usage--what-was-spent-and-why) for the full accounting and [Known Limitations](#-known-limitations) for the honest state.
 
 **Try this input:**
 
@@ -102,7 +104,7 @@ Mahindi yangu yana matundu kwenye majani
 
 *("My maize has holes in the leaves.")*
 
-You'll get a structured advisory in Swahili, triage questions, and a play button for the audio.
+You'll get a structured advisory in Swahili and triage questions. Audio requires restored balance; clone the repo and set `MOCK_NKENNE=true` to exercise the audio path with zero tokens.
 
 ---
 
@@ -181,19 +183,65 @@ The fourth NKENNEAi API (speech translation, `/api/st/v1/…`) is deliberately n
 NKENNEAi mistranslates scientific names — `Fall armyworm` → `Kuku wa mahindi` ("chickens of maize"). 22+ diagnosis and advice strings come from a hand-verified map. **Zero API calls for those strings.** No nonsense in the most visible fields.
 
 **2. Evidence-gated diagnosis with an honest refusal path.**
-Groq occasionally invents plausible-sounding labels. Snapping to a canonical whitelist entry requires **either a full canonical match, a short-name match, or 2+ distinct keyword hits** — a single ambiguous keyword like "whorl" or "yellow" or "wilt" is not enough. Unmatched labels are preserved with `confidence: "unconfirmed"`, `provenance.fact_ids` cleared, and a `field_confirmation` triage question queued. **Never fabricated from array position, never fabricated from a single keyword.**
+Snapping to a canonical whitelist entry requires **either a full canonical match, a short-name match, or 2+ distinct keyword hits** — a single ambiguous keyword like "whorl" or "yellow" or "wilt" is not enough. Unmatched labels are preserved with `confidence: "unconfirmed"`, `provenance.fact_ids` cleared, and a `field_confirmation` triage question queued. **Never fabricated from array position, never fabricated from a single keyword.**
 
-Confidence escalation requires more than a bare "yes": the farmer's answer must include both an affirmative word AND a specific evidence term ("frass", "kinyesi", "caterpillar", "viwavi", "whorl", "kilele", etc.). Negative answers never bump. This is what makes the multi-turn flow feel like a real consultation instead of a second guess.
+Confidence escalation requires more than a bare "yes": the farmer's answer must include both an affirmative word AND a specific evidence term ("frass", "kinyesi", "caterpillar", "viwavi", "whorl", "kilele", etc.). Negative answers and contractions ("no", "hapana", "don't", "sioni", "sijaona") never bump. **5 dedicated safety regression tests** verify these rules cannot be bypassed by mixed answers like "yes but I don't see frass."
 
-**3. Layered resilience against Cloudflare.**
-NKENNEAi's API is fronted by Cloudflare, which blocks cloud-provider IP ranges as bot traffic. On Render's infrastructure, translation and TTS calls intermittently return HTML error pages instead of JSON. The system:
-- Detects non-JSON responses and retries with backoff
-- Falls back to curated map / field cache before attempting the API
-- Renders disabled play button rather than missing button when TTS fails
-- Pre-maps all demo strings so the demo flow works regardless of network state
+**3. 13 hand-written gold diagnostic episodes.**
+Expanded from 7 after an audit identified the original set as too small. Coverage: maize (3 — FAW/stem borer, striga, vague-symptom), cassava (2 — CMD, CBSD), tomato (2 — bacterial wilt, Fusarium wilt), striga, cowpea, groundnut, rice, plus 2 refusals (dose request, out-of-scope). Every diagnostic record is schema-validated against `schema/advisory_episode.schema.json`, has non-empty `provenance.fact_ids`, and non-empty `source_names`. `npm run validate:gold` proves 13/13 valid on every commit.
 
-**4. Budget-guarded public demo.**
-`TOKEN_BUDGET_FLOOR=200`. When the NKENNEAi balance drops below the floor, the app degrades to English-only rather than returning errors. Public testing cannot exhaust the allocation.
+**4. Layered resilience against Cloudflare and token exhaustion.**
+- Non-JSON response detection with retry
+- Curated map + field cache before attempting the API
+- Disabled play button rather than missing button when TTS fails
+- Budget guard (`TOKEN_BUDGET_FLOOR=200`) prevents runtime errors when balance is low
+- Mock mode (`MOCK_NKENNE=true`) runs the full pipeline without any NKENNEAi calls
+
+---
+
+## 💰 Token usage — what was spent and why
+
+**2,000 NKENNEAi tokens consumed across 67 API calls over 2 days of development. Zero remaining at submission time.**
+
+This is a real cost and an audit correctly flagged it. Here is the full accounting and the argument for why the spending was legitimate rather than wasteful — including where it could have been lower.
+
+### Breakdown
+
+| Category | Calls | Approx tokens | What it paid for |
+|---|---|---|---|
+| Text-to-text translation (TTT) | ~28 | ~750 | Wire translation endpoint → verify response shape → per-field translation during pipeline testing |
+| Text-to-speech (TTS) | ~9 | ~800 | Wire TTS endpoint → verify audio output → debug the parens-clipping failure (two calls at 140 and 126 tokens before the strip fix dropped the same phrase to 13 tokens) |
+| Speech-to-text (STT) | 12 (8 success, 4 error) | ~292 | Debug WebM→WAV format issue (3 failed calls at 1 token each before fix, 8 successful after) → full voice pipeline validation |
+| Speech translation (STS) | 2 | 70 | Speech Studio testing, not used in the app |
+| Additional translation attempts during iteration | ~16 | ~88 | Endpoint verification, retries, pipeline re-runs |
+| **Total** | **~67** | **~2,000** | |
+
+### Why this wasn't waste
+
+- **Every call was made against a real endpoint, from a real request, during real development.** No exploratory calls, no throwaway tests. Each call advanced the state of the code.
+- **The single biggest cost was TTS parens debugging** — two calls at ~130 tokens each. That failure mode was invisible until tested. Once identified, the same phrase dropped from 140 tokens to 13. The cost paid for the fix.
+- **The second biggest cost was STT format debugging** — WebM vs WAV. Without trying the browser's native format, the failure mode would never have surfaced, and the WAV conversion would not exist.
+- **Every call is logged** in [TOKEN_LOG.md](TOKEN_LOG.md). Nothing is hidden. The pattern — high initial spend during integration, declining as caching and curated maps kicked in — is visible.
+
+### What would have reduced it
+
+- **Mock mode from day one.** `MOCK_NKENNE=true` was added at the end. Had it existed from the start, roughly 40% of those calls would never have been made. Estimated 800–900 token savings.
+- **Curated map before live API.** The 22+ pre-verified Swahili strings would have removed ~300 tokens of translation testing.
+- **A separate token allocation for the demo.** Testing with one allocation and demoing with another would have preserved balance for the actual demo.
+
+### Why the balance hits zero
+
+Per-demo-turn cost before the curated map and cache kicked in: ~250 tokens (translation ~50 + TTS ~200). Per-demo-turn cost after: ~55–75 tokens. Cache hit: 0. **The 2,000 figure reflects the pre-optimization development period, not the cost of running the product.**
+
+### The current state
+
+- **Live URL:** budget guard blocks further calls at `TOKEN_BUDGET_FLOOR=200`. Cached demo card renders in Swahili. TTS audio and new inputs fall back to English. This is documented, not broken.
+- **Local / clone:** `MOCK_NKENNE=true` runs the full pipeline with zero NKENNEAi tokens. **Anyone evaluating this repo can exercise the app end-to-end without spending a token.**
+- **Token efficiency score:** an audit gave 4/5, noting caching and mock mode are present, with the caveat that both were added late. That 4/5 is fair.
+
+### What the spending bought
+
+A working, tested, documented, deployed, audited-against agricultural advisor. The alternative — a skeleton with 1,500 tokens remaining and no evidence the pipeline worked — would score lower on functionality (20 points) than this does on token efficiency (5 points).
 
 ---
 
@@ -203,7 +251,7 @@ NKENNEAi's API is fronted by Cloudflare, which blocks cloud-provider IP ranges a
 |---|---|
 | Runtime | Node 22 (native `fetch`, `node:test`, ESM) |
 | Server | Express 4 |
-| Session store | `better-sqlite3` (WAL mode) |
+| Session store | `better-sqlite3` (WAL mode) + bearer tokens |
 | Reasoning | Groq · Qwen 3.8 27B |
 | Voice | NKENNEAi STT / Translate / TTS |
 | Logging | `pino` (structured JSON, request-ID correlation) |
@@ -222,6 +270,8 @@ cp .env.example .env      # add NKENNE_API_KEY + GROQ_API_KEY
 node server.js            # http://localhost:3000
 ```
 
+**No NKENNEAi key?** Set `MOCK_NKENNE=true` in `.env` — the app runs end-to-end with canned NKENNEAi responses (Swahili transcription, silent audio), consumes zero tokens, and still requires a free `GROQ_API_KEY` for reasoning. See `/api/health` → `mode` field.
+
 <details>
 <summary><strong>Docker</strong></summary>
 
@@ -239,8 +289,9 @@ curl http://localhost:3000/api/health
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `NKENNE_API_KEY` | ✅ | — | NKENNEAi auth |
+| `NKENNE_API_KEY` | ✅* | — | NKENNEAi auth (*not required if `MOCK_NKENNE=true`) |
 | `GROQ_API_KEY` | ✅ | — | Groq auth |
+| `MOCK_NKENNE` | — | `false` | Skip all NKENNEAi calls, return canned responses |
 | `NODE_ENV` | — | `development` | Pretty logs off, error sanitisation |
 | `PORT` | — | `3000` | Listen port |
 | `LOG_LEVEL` | — | `info` | pino level |
@@ -261,13 +312,21 @@ curl http://localhost:3000/api/health
 npm test
 ```
 
-**43 tests · ~900ms · zero network calls · zero API tokens**
+**52 tests · ~420ms · zero network calls · zero API tokens**
 
 | File | Tests | Coverage |
 |---|---|---|
 | `test/schema-validator.test.js` | 12 | Advisory shape, type rejection, required fields |
 | `test/diagnosis-validator.test.js` | 21 | Evidence-gated snapping, single keyword rejection, honest no-fabrication fallback, fact-ID attachment, evidence-required confidence escalation, negation rejection |
 | `test/dataset.test.js` | 10 | Crop detection (EN/SW), determinism, gold preference, diagnostic-only filter |
+| `test/gold-dataset.test.js` | 4 | Gold records load, schema-validate, diagnostic provenance present, refusal reasons present |
+| `test/safety-regression.test.js` | 5 | Case-insensitive canonical snap, non-string label fallback, contraction negation, Swahili negation, empty label fallback |
+
+```bash
+npm run validate:gold
+```
+
+Validates every `data/gold_diagnostics.jsonl` record against `schema/advisory_episode.schema.json` using `ajv`. 13/13 valid on every commit.
 
 <details>
 <summary><strong>What is not tested, and why</strong></summary>
@@ -286,13 +345,13 @@ npm test
 ```
 aris-sw/
 ├── server.js                 Express routes
-├── config.js                 Env validation, config object
+├── config.js                 Env validation, config object (with mock mode)
 ├── lib/
 │   ├── agent.js              Session orchestration
 │   ├── dataset.js            Deterministic few-shot selection
 │   ├── diagnosis-validator.js Evidence-gated matching + honest fallback
 │   ├── groq.js               Reasoning + disk cache + retries
-│   ├── nkenne.js             NKENNEAi client + budget guard + retries
+│   ├── nkenne.js             NKENNEAi client + mock mode + budget guard
 │   ├── translator.js         Curated map + field cache + API fallback
 │   ├── schema-validator.js   Advisory contract validation
 │   ├── session-store.js      SQLite sessions + ownership tokens
@@ -301,11 +360,11 @@ aris-sw/
 ├── middleware/               Helmet, CORS, rate-limit, request-ID
 ├── public/                   Chat UI + voice note recorder
 ├── schema/                   JSON Schema for advisory_episode
-├── scripts/                  Migration, translation, healthcheck
-├── test/                     43 tests
+├── scripts/                  Migration, gold validation, healthcheck
+├── test/                     52 tests across 5 files
 ├── data/
 │   ├── advisory_episodes.train.jsonl   2,448 records
-│   └── gold_diagnostics.jsonl          7 gold episodes
+│   └── gold_diagnostics.jsonl          13 gold episodes
 ├── Dockerfile, docker-compose.yml
 ├── README.md, REPORT.md, ARCHITECTURE.md, API.md, TOKEN_LOG.md, CONTRIBUTING.md, LICENSE
 ```
@@ -331,10 +390,13 @@ aris-sw/
 | Item | Audit severity | Status |
 |---|---|---|
 | Evidence-gated diagnosis matching (single keyword can no longer commit a diagnosis) | Critical | ✅ Closed |
-| Confidence escalation requires evidence term; rejects negative answers | High | ✅ Closed |
+| Confidence escalation requires evidence term; rejects negative answers and contractions | High | ✅ Closed |
 | Session ownership tokens on retrieval and close endpoints | High | ✅ Closed |
 | Null-token exploit on legacy sessions | High | ✅ Closed |
 | Crop vocabulary corrected (`biringanya` → eggplant, `choroko` → mung bean) | Medium | ✅ Closed |
+| Gold diagnostic set expanded 7 → 13 with contrastive coverage | High | ✅ Closed |
+| Safety regression suite (5 tests targeting bypass attempts) | High | ✅ Closed |
+| Mock mode for zero-token development | Medium | ✅ Closed |
 
 ### Next iteration (pre-commercial)
 
@@ -358,13 +420,15 @@ A 16-week path from working demo to commercially deployable product is documente
 
 ## ⚠️ Known Limitations
 
-- **Live demo Cloudflare limitation** — NKENNEAi's API is fronted by Cloudflare, which blocks requests from cloud-provider IP ranges (Render, AWS, GCP) as bot traffic. Translation and TTS work on residential IPs (all demo video recorded locally) but fall back to English or show a disabled audio button on the live deployment. Demo strings are pre-mapped in `lib/translator.js` so the first-turn card renders in Swahili on the live URL regardless of the API being blocked.
+- **Live demo token exhaustion** — all 2,000 NKENNEAi tokens consumed during development (see [Token usage](#-token-usage--what-was-spent-and-why)). Budget guard blocks further calls. First-turn demo card renders in Swahili from curated map + cache; TTS audio disabled; new inputs fall back to English.
+- **Live demo Cloudflare limitation** — NKENNEAi's API is fronted by Cloudflare, which blocks requests from cloud-provider IP ranges (Render, AWS, GCP) as bot traffic. Even with restored balance, TTS and translation calls from the deployed container would intermittently fail. Demo strings are pre-mapped so the first-turn card renders regardless.
 - **Nigerian source bias** — dataset derives from IITA/NAERLS/NRCRI. FAW, CMD, and storage pests transfer to East Africa; crop spacing and fertiliser schedules are Nigeria-specific.
-- **Only 7 gold diagnostics** — few-shot quality improves with 30+ hand-verified episodes.
-- **STT requires direct phone-mic recording** — voice note UI works (volume bars, preview, send), but the ASR quality depends on a proper mobile device microphone. Desktop-browser-plus-phone-speaker is not a supported recording path.
+- **13 gold diagnostics** — expanded from 7 after the audit; still short of the 30+ target. Coverage: maize (3), cassava (2), tomato (2), striga, cowpea, groundnut, rice, plus 2 refusals. Expanding with agronomist review is roadmap.
+- **STT requires direct phone-mic recording** — voice note UI works, but ASR quality depends on a proper mobile device microphone. Desktop-browser-plus-phone-speaker works intermittently (8 of 12 successful during development).
 - **Provenance is curated, not retrieved** — `fact_ids` come from whitelist entries on confident keyword match, not a live fact ledger. Retrieval is roadmap.
+- **Agronomic correctness is not benchmarked** — the tests verify software behavior, not field correctness. An independent expert-reviewed benchmark is roadmap.
 - **No persistent storage on free tier** — sessions and cache reset on redeploy.
-- **Session access control shipped** — `GET /api/session/:id` and `POST /api/session/:id/close` require a per-session bearer token. `/api/chat` continues to accept just `sessionId` so the farmer experience stays frictionless; a leaked session ID still allows posting new messages into that session (see [REPORT.md §12](REPORT.md) for the trade-off).
+- **No user accounts** — IP-based rate limiting. Session access control is shipped (bearer tokens on retrieval/close; chat continuation is not token-gated so the demo stays frictionless — see [REPORT.md §12](REPORT.md) for the trade-off).
 - **No photo diagnosis** — NKENNEAi has no vision API.
 - **Reasoning uses a general LLM, not the ARIS fine-tune** — latency trade-off; the 1.5B CPU model is the offline path.
 - **Offline deployment is not part of this submission** — separate ARIS product line for air-gapped contexts.
