@@ -1,11 +1,11 @@
-﻿{
+{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ARIS Swahili Advisory Episode",
   "type": "object",
   "required": ["episode_id", "schema_version", "language", "record_kind", "context", "provenance", "review"],
   "additionalProperties": false,
   "properties": {
-    "episode_id": { "type": "string", "pattern": "^SW-EP-[0-9]{4,}$" },
+    "episode_id": { "type": "string", "pattern": "^SW-(EP|GOLD)-[0-9]{4,}$" },
     "schema_version": { "const": "agentic-v1" },
     "language": { "enum": ["sw", "en"] },
     "channel": { "enum": ["voice", "text", "chat"] },
