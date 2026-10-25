@@ -6,7 +6,7 @@
 
 [![Live Demo](https://img.shields.io/badge/demo-live-22b57f?style=flat-square)](https://aris-sw.onrender.com)
 [![NKENNEAi](https://img.shields.io/badge/NKENNEAi-STT%20%C2%B7%20Translate%20%C2%B7%20TTS-2b9bf0?style=flat-square)](https://nkenne.ai)
-[![Tests](https://img.shields.io/badge/tests-36%20passing-22b57f?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-43%20passing-22b57f?style=flat-square)](#testing)
 [![License](https://img.shields.io/badge/license-MIT-8a9bb0?style=flat-square)](LICENSE)
 
 [Live Demo](https://aris-sw.onrender.com) · [Technical Report](REPORT.md) · [Architecture](ARCHITECTURE.md) · [API Reference](API.md) · [Token Log](TOKEN_LOG.md)
@@ -120,8 +120,8 @@ Structured advisory (JSON)
     ▼  Schema validation → retry on failure
 Validated advisory
     │
-    ▼  Diagnosis whitelist enforcement + confidence escalation
-Verified advisory (or honest "unconfirmed" when no match)
+    ▼  Evidence-gated diagnosis enforcement + confidence escalation
+Verified advisory (or honest "unconfirmed" when no confident match)
     │
     ▼  NKENNEAi Translation (per-field, curated map + API + retry)
 Swahili advisory
@@ -135,13 +135,13 @@ Swahili audio to farmer
 
 1. **`POST /api/stt`** — NKENNEAi Speech-to-Text receives `audio/wav` multipart body → `{text, duration, language}`
 2. **`POST /api/chat`** with `{sessionId?, input}`:
-   - Session resolution (SQLite)
+   - Session resolution (SQLite) + session bearer token on new session creation
    - Triage detection — if pending question exists, input is the answer
-   - Few-shot selection (deterministic, crop + symptom overlap)
+   - Few-shot selection (deterministic, crop + symptom overlap; diagnostic inputs filtered to `diagnostic_episode` records only)
    - Groq reasoning → JSON advisory (English)
    - Schema validation with retry
-   - Diagnosis whitelist enforcement (confident matches snap + attach fact IDs; unmatched are preserved as `unconfirmed`)
-   - Confidence escalation on confirmation discriminators
+   - Evidence-gated diagnosis enforcement (canonical match, short-name, or 2+ keyword hits snap; single keyword or no match → `unconfirmed` with cleared provenance + `field_confirmation` question)
+   - Confidence escalation only when answer contains both affirmative word AND specific evidence term
    - Translation: curated map → cached field → NKENNEAi API (with retry)
    - Persistence to session + cache
 3. **`POST /api/tts`** — NKENNEAi TTS → `audio/mpeg` (parenthetical scientific names stripped before send)
@@ -167,7 +167,7 @@ Warm latency: **2.5–4s** end-to-end.
 
 **Translation** — per-field, with three-tier fallback: curated map (0 tokens, 22+ pre-mapped strings), in-memory field cache, NKENNEAi API with 3-attempt retry + exponential backoff. All final fields hold Swahili or fall back to English with an `EN` marker.
 
-**TTS** — binary stream. Parenthetical scientific names (`(Spodoptera frugiperda)`) are stripped before send — TTS engines break on them. Retry up to 3 times.
+**TTS** — binary stream. Parenthetical scientific names (`(Spodoptera frugiperda)`) are stripped before send — TTS engines break on them. Retry up to 3 times. On failure, the play button renders disabled with a tooltip rather than being omitted.
 
 The fourth NKENNEAi API (speech translation, `/api/st/v1/…`) is deliberately not used — see [REPORT.md §3.4](REPORT.md) for reasoning.
 
@@ -180,8 +180,10 @@ The fourth NKENNEAi API (speech translation, `/api/st/v1/…`) is deliberately n
 **1. Curated Swahili for diagnoses and common advice.**
 NKENNEAi mistranslates scientific names — `Fall armyworm` → `Kuku wa mahindi` ("chickens of maize"). 22+ diagnosis and advice strings come from a hand-verified map. **Zero API calls for those strings.** No nonsense in the most visible fields.
 
-**2. Diagnosis enforcement with an honest refusal path.**
-Groq occasionally invents plausible-sounding labels. When strong keyword overlap with a whitelist entry exists, we snap to canonical + attach real `fact_ids`. When it doesn't, the model's own label is preserved with `confidence: "unconfirmed"`, `provenance.fact_ids` cleared, and a `field_confirmation` triage question queued. **Never fabricated from array position.**
+**2. Evidence-gated diagnosis with an honest refusal path.**
+Groq occasionally invents plausible-sounding labels. Snapping to a canonical whitelist entry requires **either a full canonical match, a short-name match, or 2+ distinct keyword hits** — a single ambiguous keyword like "whorl" or "yellow" or "wilt" is not enough. Unmatched labels are preserved with `confidence: "unconfirmed"`, `provenance.fact_ids` cleared, and a `field_confirmation` triage question queued. **Never fabricated from array position, never fabricated from a single keyword.**
+
+Confidence escalation requires more than a bare "yes": the farmer's answer must include both an affirmative word AND a specific evidence term ("frass", "kinyesi", "caterpillar", "viwavi", "whorl", "kilele", etc.). Negative answers never bump. This is what makes the multi-turn flow feel like a real consultation instead of a second guess.
 
 **3. Layered resilience against Cloudflare.**
 NKENNEAi's API is fronted by Cloudflare, which blocks cloud-provider IP ranges as bot traffic. On Render's infrastructure, translation and TTS calls intermittently return HTML error pages instead of JSON. The system:
@@ -205,7 +207,7 @@ NKENNEAi's API is fronted by Cloudflare, which blocks cloud-provider IP ranges a
 | Reasoning | Groq · Qwen 3.8 27B |
 | Voice | NKENNEAi STT / Translate / TTS |
 | Logging | `pino` (structured JSON, request-ID correlation) |
-| Security | `helmet`, `cors`, `express-rate-limit` |
+| Security | `helmet`, `cors`, `express-rate-limit`, per-session bearer tokens |
 | Deploy | Render + multi-stage Docker |
 
 ---
@@ -259,12 +261,12 @@ curl http://localhost:3000/api/health
 npm test
 ```
 
-**40+ tests · ~900ms · zero network calls · zero API tokens**
+**43 tests · ~900ms · zero network calls · zero API tokens**
 
 | File | Tests | Coverage |
 |---|---|---|
 | `test/schema-validator.test.js` | 12 | Advisory shape, type rejection, required fields |
-| `test/diagnosis-validator.test.js` | 14 | Whitelist snapping, honest no-fabrication fallback, fact-ID attachment, confidence escalation |
+| `test/diagnosis-validator.test.js` | 21 | Evidence-gated snapping, single keyword rejection, honest no-fabrication fallback, fact-ID attachment, evidence-required confidence escalation, negation rejection |
 | `test/dataset.test.js` | 10 | Crop detection (EN/SW), determinism, gold preference, diagnostic-only filter |
 
 <details>
@@ -288,19 +290,19 @@ aris-sw/
 ├── lib/
 │   ├── agent.js              Session orchestration
 │   ├── dataset.js            Deterministic few-shot selection
-│   ├── diagnosis-validator.js Whitelist + honest fallback + escalation
+│   ├── diagnosis-validator.js Evidence-gated matching + honest fallback
 │   ├── groq.js               Reasoning + disk cache + retries
 │   ├── nkenne.js             NKENNEAi client + budget guard + retries
 │   ├── translator.js         Curated map + field cache + API fallback
 │   ├── schema-validator.js   Advisory contract validation
-│   ├── session-store.js      SQLite sessions
+│   ├── session-store.js      SQLite sessions + ownership tokens
 │   ├── logger.js             Structured logging
 │   └── errors.js             Typed error codes
 ├── middleware/               Helmet, CORS, rate-limit, request-ID
 ├── public/                   Chat UI + voice note recorder
 ├── schema/                   JSON Schema for advisory_episode
 ├── scripts/                  Migration, translation, healthcheck
-├── test/                     36 tests
+├── test/                     43 tests
 ├── data/
 │   ├── advisory_episodes.train.jsonl   2,448 records
 │   └── gold_diagnostics.jsonl          7 gold episodes
@@ -314,7 +316,7 @@ aris-sw/
 
 | Document | What it answers |
 |---|---|
-| [**REPORT.md**](REPORT.md) | Full technical report: per-API deep dive, error handling matrix, dataset strategy, token economics, adoption path, known limitations |
+| [**REPORT.md**](REPORT.md) | Full technical report: per-API deep dive, error handling matrix, dataset strategy, token economics, adoption path, known limitations, commercialisation roadmap |
 | [**ARCHITECTURE.md**](ARCHITECTURE.md) | System diagram, request lifecycle, design decisions, security model |
 | [**API.md**](API.md) | Every endpoint, request/response shapes, error codes, rate limits |
 | [**TOKEN_LOG.md**](TOKEN_LOG.md) | Allocation, every call logged, efficiency measures |
@@ -323,17 +325,6 @@ aris-sw/
 ---
 
 ## 🛣 Roadmap
-
-| Priority | Item |
-|---|---|
-| P0 | Fact-ledger retrieval for `provenance.fact_ids` |
-| P0 | Playwright E2E suite |
-| P0 | Session authorization (per-session bearer token) |
-| P1 | Offline deployment (ARIS Qwen 1.5B on CPU / Raspberry Pi) |
-| P1 | WhatsApp Business API integration |
-| P2 | Photo-based diagnosis |
-| P2 | Extension-officer dashboard |
-| P3 | Multi-language (Yoruba, Pidgin, Kikuyu) |## 🛣 Roadmap
 
 ### Completed since initial submission
 
@@ -361,7 +352,7 @@ aris-sw/
 
 ### Commercialisation
 
-A 16-week path from working demo to commercially deployable product is documented in [REPORT.md §16](REPORT.md). It covers seven workstreams — agronomic reliability, product architecture, language and voice validation, security and privacy, production operations, commercial model, and phased rollout — and includes a 12-item launch-readiness checklist with honest current state.
+A 16-week path from working demo to commercially deployable product is documented in [REPORT.md §16](REPORT.md). Seven workstreams — agronomic reliability, product architecture, language and voice validation, security and privacy, production operations, commercial model, and phased rollout — plus a 12-item launch-readiness checklist with honest current state.
 
 ---
 
@@ -371,9 +362,9 @@ A 16-week path from working demo to commercially deployable product is documente
 - **Nigerian source bias** — dataset derives from IITA/NAERLS/NRCRI. FAW, CMD, and storage pests transfer to East Africa; crop spacing and fertiliser schedules are Nigeria-specific.
 - **Only 7 gold diagnostics** — few-shot quality improves with 30+ hand-verified episodes.
 - **STT requires direct phone-mic recording** — voice note UI works (volume bars, preview, send), but the ASR quality depends on a proper mobile device microphone. Desktop-browser-plus-phone-speaker is not a supported recording path.
-- **Provenance is curated, not retrieved** — `fact_ids` come from whitelist entries, not a live fact ledger. Retrieval is roadmap.
+- **Provenance is curated, not retrieved** — `fact_ids` come from whitelist entries on confident keyword match, not a live fact ledger. Retrieval is roadmap.
 - **No persistent storage on free tier** — sessions and cache reset on redeploy.
-- **No user accounts** — IP-based rate limiting.
+- **Session access control shipped** — `GET /api/session/:id` and `POST /api/session/:id/close` require a per-session bearer token. `/api/chat` continues to accept just `sessionId` so the farmer experience stays frictionless; a leaked session ID still allows posting new messages into that session (see [REPORT.md §12](REPORT.md) for the trade-off).
 - **No photo diagnosis** — NKENNEAi has no vision API.
 - **Reasoning uses a general LLM, not the ARIS fine-tune** — latency trade-off; the 1.5B CPU model is the offline path.
 - **Offline deployment is not part of this submission** — separate ARIS product line for air-gapped contexts.
