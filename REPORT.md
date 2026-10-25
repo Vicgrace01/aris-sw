@@ -437,3 +437,138 @@ Full disclosure — every limitation is a rubric-recognised "known limitations" 
 ## 15. License
 
 MIT. See `LICENSE`.
+
+---
+---
+
+## 16. Commercialisation roadmap
+
+This section describes what would be required to move ARIS-SW from a working hackathon submission to a commercially deployable product. It is explicitly forward-looking — none of the items below are implemented in the current build.
+
+**The distinction that matters.** A hackathon-ready application demonstrates that a workflow is *possible*. A commercial product demonstrates that the workflow is *safe, reliable, supportable, and economically sustainable at scale*. ARIS-SW is firmly in the first category. Getting to the second is not a matter of adding features — it is seven workstreams of engineering, agronomy, and validation, estimated at 16 weeks for a small competent team.
+
+### 16.1 Seven commercialisation workstreams
+
+**1. Agronomic reliability (first release blocker).**
+
+ARIS gives advice that can influence crop losses, pesticide use, and farmer income. This is the workstream that gates everything else.
+
+- **Fact ledger.** Every recommendation must trace to a stable fact ID with source URL, exact claim, publication date, geographic applicability, and review status. The current `fact_ids` are curated labels attached from a whitelist entry — not retrieved evidence. This distinction is documented in §12 and must be closed before commercial advice is given.
+- **Evidence-gated diagnosis.** The current implementation requires 2+ distinct keyword matches or a canonical label match before snapping to a diagnosis. A commercial product needs crop-specific symptom discriminators with multiple plausible differentials, not keyword threshold.
+- **Independent benchmark.** 500+ expert-reviewed cases, held out from prompt construction and few-shot examples. Include lookalike conditions, ambiguous complaints, wrong crop identification, and cases where refusal is correct. Measures diagnostic accuracy, dangerous-advice rate, unsupported-claim rate, and appropriate-refusal rate.
+- **Regional separation.** The dataset derives from Nigerian sources (IITA, NAERLS, NRCRI). East African deployment requires re-verification against TARI, KALRO, and NARO for any recommendation that is not pan-African (spacing, fertiliser schedules, variety names).
+
+**2. Product architecture (dependability).**
+
+External dependencies (Groq, NKENNEAi) are acceptable for a commercial web product *if* managed properly.
+
+- Timeouts, retries with backoff, circuit breakers, and graceful degradation for every external API — partially implemented; needs circuit-breaker pattern.
+- Managed, backed-up database with migrations and tested restoration — currently SQLite in-container, unsuitable for commercial scale.
+- Cache keys must include input, conversation context, model version, prompt version, and knowledge-base version — current implementation includes three of five.
+- Full request/response schema validation and versioned endpoints — current validation covers safety-critical fields, not the full contract.
+- Background queue for long audio and translation jobs where synchronous requests become unreliable.
+- Load testing, connection limits, capacity planning.
+- Documented backup, recovery, and incident procedures.
+
+**3. Language and voice validation.**
+
+Swahili STT/TTS is documented and works when a farmer speaks into their own phone. It has not been validated against recordings from actual target users.
+
+- Test STT on real recordings — multiple accents, background noise, agricultural vocabulary, quantities, dates, and safety instructions.
+- Test translation of crop names, symptom descriptions, and pesticide labels for accuracy and consistency.
+- Preserve numbers, units, and timing instructions exactly — a mistranslated pre-harvest interval is a food-safety issue, not a UX bug.
+- Measure language support per-language, not by whether an API accepts a language code.
+- Provide a text fallback and replay mechanism when audio fails.
+
+**4. Security, privacy, and data governance.**
+
+The session ownership issue identified in the audit was closed after initial submission. Remaining items before onboarding paying customers:
+
+- User and administrator authentication with role-based permissions.
+- TLS, secret management, dependency scanning, secure deployment configuration.
+- Redaction of sensitive information from logs; controlled retention and deletion of recordings and transcripts.
+- Documented privacy notice, lawful processing basis, consent mechanism, data-subject request process.
+- For Nigerian deployment, assess obligations under the Nigeria Data Protection Act 2023.
+- Use OWASP API Security Top 10 as a baseline for API hardening.
+- Review provider data-handling and commercial-use terms — what happens to farmer audio and text at NKENNEAi and Groq, whether it is retained, and what restrictions apply to commercial use.
+
+**5. Production operations and support.**
+
+The current deployment is operated by one person. That is not a commercially deployable posture.
+
+- CI/CD pipeline with automated tests on every change.
+- Separate development, staging, and production environments.
+- Error reporting, structured logs, service health monitoring, alerts.
+- Monitoring for API failures, latency, token consumption, translation errors, and diagnostic safety failures.
+- Rollback capability for bad releases and faulty knowledge-base updates.
+- Customer support, incident escalation, agronomic review process.
+- Documented uptime targets, maintenance windows, and service limitations.
+
+**6. Commercial model.**
+
+Before setting a subscription price, measure the real cost of serving one farmer.
+
+Cost per completed advisory = STT + reasoning + translation + TTS + infrastructure, plus failed requests, retries, support, payments, taxes, and partner commissions. Caching reduces cost only when it does not return advice that is stale or contextually inappropriate.
+
+Potential routes to market:
+
+- **Direct-to-farmer.** Lightweight web app, messaging interface, or voice channel. Test willingness to pay carefully; affordability and connectivity are real constraints.
+- **Institutional licensing.** Cooperatives, NGOs, agricultural programmes, and extension services pay for access, reporting, training, and farmer support. This is the recommended initial path because it provides a route to supervised deployment, feedback, and measurable outcomes.
+- **Agricultural business partnerships.** Input retailers and agribusinesses sponsor access or integrate advisory features, with safeguards against biased product recommendations.
+
+**7. Controlled paid pilot.**
+
+A small cohort through a cooperative or extension partner. Monitor failures, advice quality, retention, support demand, and cost per successful advisory. This is the gate that produces the evidence needed to justify broader deployment.
+
+### 16.2 Launch-readiness checklist
+
+Current state against a commercial launch standard. **Honest count: 2 of 12 complete.**
+
+| # | Category | Item | Status |
+|---|---|---|---|
+| 1 | Agronomic safety | Reviewed source ledger with traceable advice | ❌ Roadmap |
+| 2 | Agronomic safety | No known critical unsafe-advice failures in the release benchmark | ❌ No benchmark |
+| 3 | Agronomic safety | Uncertain and high-risk cases handled through safe triage or referral | ✅ Implemented |
+| 4 | Product reliability | Complete voice-to-advisory workflow tested on real recordings | ❌ Field audio untested |
+| 5 | Product reliability | Timeouts, retries, fallbacks, and recovery verified | ⚠️ Partial (retries + fallback yes, circuit breaker + tested recovery no) |
+| 6 | Product reliability | Backups restored successfully in a test | ❌ Not implemented |
+| 7 | Security and privacy | Session ownership and access controls tested | ✅ Closed post-submission |
+| 8 | Security and privacy | Privacy notice, retention, and deletion procedures in place | ❌ Not implemented |
+| 9 | Security and privacy | Provider data-handling and commercial-use terms reviewed | ❌ Not reviewed |
+| 10 | Commercial operations | Cost per successful advisory measured | ⚠️ Partial (token cost tracked, full cost no) |
+| 11 | Commercial operations | Monitoring, alerts, and rollback operational | ⚠️ Partial (logs + health yes, alerts + rollback no) |
+| 12 | Commercial operations | Pilot users, support owner, and success metrics defined | ❌ Not started |
+
+### 16.3 Phased rollout (16 weeks for a small competent team)
+
+These are planning estimates, not guaranteed delivery dates.
+
+**Weeks 1–3 — Stabilise.**
+
+Close remaining audit findings, enforce full schema validation, complete session access controls (done), document all external dependencies. Gate: no known critical security or diagnosis-control defect.
+
+**Weeks 4–7 — Validate.**
+
+Build reviewed knowledge base, create held-out benchmark, test real voice recordings, establish safety and language acceptance criteria. Gate: agronomic and language performance meets pre-agreed thresholds. **This phase requires an agronomist — it cannot be completed by engineers alone.**
+
+**Weeks 8–11 — Production hardening.**
+
+Managed infrastructure, backups, monitoring, privacy controls, CI/CD, cost limits, recovery procedures. Load and security testing. Gate: reliable deployment, recovery, and operational cost data.
+
+**Weeks 12–16 — Controlled paid pilot.**
+
+Small cohort through a cooperative or extension partner. Monitor failures, advice quality, retention, support demand, cost per successful advisory. Gate: evidence to justify broader deployment.
+
+### 16.4 Design principle
+
+A smaller agricultural advisor that knows when it does not know is more commercially valuable than a universal advisor that occasionally invents the answer. The evidence-gated diagnosis implemented after the audit follows this principle: single ambiguous keywords no longer commit a diagnosis, confidence only escalates when a specific evidence term is present, and unmatched labels are preserved as `unconfirmed` with cleared provenance and a field-confirmation question.
+
+Expansion to more crops, more languages, and more regions should wait until the initial coverage is reliable. A feature that exists but occasionally gives wrong advice is worse than a feature that does not exist.
+
+### 16.5 The immediate next step
+
+The highest-leverage action is not another feature or another code refactor. It is a conversation with an agricultural extension officer in Nigeria or East Africa who will review 20 cases in exchange for being credited as an advisor on the next submission. Every workstream in this document assumes expert agronomic input is available. Without it, no amount of infrastructure makes the advice safe to act on.
+
+The current repository is a working demonstration that the workflow is possible. Turning it into a product that farmers can depend on requires a team, not a sprint.
+
+---
