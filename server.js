@@ -16,7 +16,7 @@ import { securityMiddleware } from './middleware/security.js';
 import { loadDataset, getStats as getDatasetStats } from './lib/dataset.js';
 import { reason, getCacheStats as getGroqCacheStats } from './lib/groq.js';
 import { handleMessage, getSessionView } from './lib/agent.js';
-import { createSession, closeSession } from './lib/session-store.js';
+import { createSession, closeSession, verifySessionToken } from './lib/session-store.js';
 import * as nkenne from './lib/nkenne.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,6 +42,12 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
 });
+
+function extractBearerToken(req) {
+  const h = req.headers.authorization || '';
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : null;
+}
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -74,15 +80,23 @@ app.post('/api/reason', asyncHandler(async (req, res) => {
 
 app.post('/api/session', asyncHandler(async (req, res) => {
   const session = createSession(req.body?.context || {});
-  res.status(201).json({ sessionId: session.id, session, requestId: req.id });
+  res.status(201).json({ sessionId: session.id, sessionToken: session.sessionToken, session, requestId: req.id });
 }));
 
 app.get('/api/session/:id', asyncHandler(async (req, res) => {
+  const token = extractBearerToken(req);
+  if (!verifySessionToken(req.params.id, token)) {
+    throw Errors.unauthorized('A valid session token is required to retrieve this session');
+  }
   const session = getSessionView(req.params.id);
   res.json({ session, requestId: req.id });
 }));
 
 app.post('/api/session/:id/close', asyncHandler(async (req, res) => {
+  const token = extractBearerToken(req);
+  if (!verifySessionToken(req.params.id, token)) {
+    throw Errors.unauthorized('A valid session token is required to close this session');
+  }
   const { id } = req.params;
   const session = getSessionView(id);
   closeSession(id);
